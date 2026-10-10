@@ -1,0 +1,26 @@
+.topbar { position: sticky; top: 0; z-index: 30; min-height: 48px; display: flex; align-items: center; gap: 14px; padding: 0 24px; background: var(--panel); border-bottom: 1px solid var(--line); color: var(--text); }
+.topbar .brand { display: flex; align-items: center; gap: 9px; color: var(--text-bright); text-decoration: none; flex: 0 0 auto; }
+.brand-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #fff; font: 700 13px var(--mono); }
+.brand-copy { display: flex; align-items: baseline; gap: 10px; }
+.brand-copy strong { font-size: 14px; font-weight: 650; }
+.brand-copy small { color: var(--muted-foreground); font-size: 11px; }
+.top-nav { align-self: stretch; display: flex; align-items: stretch; gap: 1px; margin-left: 18px; min-width: 0; overflow-x: auto; }
+.top-nav a { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; color: var(--muted-foreground); font-size: 12.5px; text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; transition: color .15s ease, background .15s ease; }
+.top-nav a:hover { color: var(--text); background: var(--hover); }
+.top-nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+.top-nav b { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--red); color: #fff; font: 600 10px var(--mono); }
+.topbar .connection-state { display: flex; align-items: center; gap: 7px; margin-left: auto; padding-left: 14px; border-left: 1px solid var(--line); color: var(--muted-foreground); font-size: 11.5px; white-space: nowrap; }
+.connection-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); }
+.connection-state i.online { background: var(--green); box-shadow: 0 0 0 3px #3fb95020; }
+.connections-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 25px; align-items: start; }
+.connections-subnav { padding: 10px 0; border-right: 1px solid var(--line); }
+.subnav-heading { display: grid; gap: 3px; padding: 7px 16px 15px; }
+.subnav-heading span { color: var(--text-bright); font-size: 14px; font-weight: 650; }
+.subnav-heading small, .eyebrow { color: var(--muted-foreground); font-size: 11.5px; }
+.connections-subnav nav { display: grid; gap: 3px; padding-right: 12px; }
+.connections-subnav nav a { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 12px 0 16px; border-radius: 0 5px 5px 0; color: var(--muted-foreground); text-decoration: none; }
+.connections-subnav nav a:hover, .connections-subnav nav a.active { color: var(--accent); background: var(--accent-soft); }
+.connections-subnav nav b { margin-left: auto; font: 600 11px var(--mono); }
+.connections-content { min-width: 0; }
+@media (max-width: 900px) { .topbar { flex-wrap: wrap; gap: 0; padding: 0 12px; } .topbar .brand { min-height: 48px; } .topbar .connection-state { display: none; } .top-nav { order: 3; flex-basis: 100%; margin-left: 0; min-height: 40px; } .connections-layout { grid-template-columns: 1fr; gap: 16px; } .connections-subnav { border: 0; border-bottom: 1px solid var(--line); padding-bottom: 10px; } .connections-subnav nav { display: flex; overflow-x: auto; padding: 0; } .connections-subnav nav a { min-width: 120px; border-radius: 5px; } }
+@media (max-width: 560px) { .brand-copy small, .top-nav a span { display: none; } .top-nav a { min-width: 48px; justify-content: center; padding: 0 13px; } }

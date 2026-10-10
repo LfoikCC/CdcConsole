@@ -1,0 +1,8 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "assets/cdc-console.svg": "c489e1d4f9127dd7e13ba513666ec4feb5ce1e7b38b058dc49f65990d0b57696",
+    "manifest.json": "9eabfd9c3b8e8775d3e2f0c07863a37bd48ac221dd279a6d68a01e85eff03dda",
+    "ui/index.html": "de389dac59dd997a3396602dc334953bb80ad40cfdeb61898e347b2548e51d8c"
+  }
+}

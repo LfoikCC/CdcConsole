@@ -1,0 +1,3 @@
+name = "cdc-console"
+manifest = "manifest.json"
+ui_root = "ui"

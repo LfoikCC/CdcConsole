@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CDC SSE Probe</title>
+  <style>
+    body { font: 14px system-ui,sans-serif; background: var(--background,#111); color: var(--foreground,#eee); margin: 24px; }
+    button { padding: 8px 12px; background: var(--primary,#3579dd); color: var(--primary-foreground,#fff); border: 0; cursor: pointer; }
+    pre { white-space: pre-wrap; border: 1px solid var(--border,#555); padding: 12px; min-height: 180px; }
+  </style>
+</head>
+<body>
+  <h1>CDC SSE 沙箱验证</h1>
+  <button id="run">连接并验证</button>
+  <pre id="result" aria-live="polite"></pre>
+  <script type="module">
+    const output = document.querySelector('#result')
+    const host = window.dbx?.hostApi || window.dbx?.host || window.__DBX_HOST_API__
+    let controller
+    let lastEventId = ''
+    let config
+    function report(message) { output.textContent += `${new Date().toLocaleTimeString()} ${message}\n` }
+    async function connect() {
+      controller?.abort()
+      if (!host?.getBackendConfig) { report('缺少 getBackendConfig'); return }
+      config = await host.getBackendConfig()
+      if (!config?.baseUrl || !config?.accessToken) { report('缺少后端地址或访问令牌'); return }
+      const base = config.baseUrl.replace(/\/$/, '')
+      const api = base.endsWith('/api') ? base : `${base}/api`
+      const headers = { Authorization: `Bearer ${config.accessToken}`, Accept: 'text/event-stream' }
+      if (lastEventId) headers['Last-Event-ID'] = lastEventId
+      controller = new AbortController()
+      const response = await fetch(`${api}/runtime/events`, { headers, signal: controller.signal, cache: 'no-store' })
+      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
+      report(`SSE 已连接，Last-Event-ID=${lastEventId || '无'}`)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n')
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() || ''
+        for (const frame of frames) {
+          const id = frame.match(/^id: ?(.+)$/m)?.[1]
+          const event = frame.match(/^event: ?(.+)$/m)?.[1] || 'message'
+          if (id) lastEventId = id
+          report(`${event} id=${id || '无'}`)
+        }
+      }
+    }
+    document.querySelector('#run').onclick = () => connect().catch(error => report(`连接失败：${error.message}`))
+    host?.onBackendTokenChange?.(() => connect().catch(error => report(`重新连接失败：${error.message}`)))
+    host?.getThemeTokens?.().then(tokens => Object.entries(tokens).forEach(([key, value]) => document.documentElement.style.setProperty(key.startsWith('--') ? key : `--${key}`, value)))
+    host?.onThemeChange?.(tokens => Object.entries(tokens).forEach(([key, value]) => document.documentElement.style.setProperty(key.startsWith('--') ? key : `--${key}`, value)))
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 1,
+  "id": "com.cdcplatform.sse-probe",
+  "name": "CDC SSE Probe",
+  "version": "0.1.0",
+  "publisher": "cdc-platform",
+  "description": "CDC 后端与 SSE 沙箱连通性探针",
+  "icon": "assets/cdc-console.svg",
+  "engines": { "host_api": "1" },
+  "permissions": ["host.workbench"],
+  "entrypoints": { "ui": { "root": "ui", "entry": "ui/index.html" } },
+  "contributions": [
+    { "type": "workbench", "id": "com.cdcplatform.sse-probe.main", "label": "CDC SSE Probe", "icon": "assets/cdc-console.svg" }
+  ]
+}

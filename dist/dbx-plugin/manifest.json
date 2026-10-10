@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/t8y2/dbx/main/plugins/manifest.schema.json",
+  "manifest_version": 1,
+  "id": "com.cdcplatform.console",
+  "name": "CDC Console",
+  "version": "0.1.0",
+  "publisher": "cdc-platform",
+  "description": "CDC 数据同步、目标订阅、投递批次和数据核对工作台。",
+  "icon": "assets/cdc-console.svg",
+  "source": "https://example.invalid/cdc-platform",
+  "engines": { "host_api": "1" },
+  "permissions": ["host.workbench"],
+  "entrypoints": {
+    "ui": { "root": "ui", "entry": "ui/index.html" }
+  },
+  "contributions": [
+    { "type": "workbench", "id": "com.cdcplatform.console.main", "label": "CDC 总览", "icon": "assets/cdc-console.svg" },
+    { "type": "command", "id": "com.cdcplatform.console.tasks", "label": "同步任务", "icon": "assets/cdc-console.svg", "action": { "type": "open-workbench", "workbench": "com.cdcplatform.console.main", "presentation": "tab", "context": { "route": "/tasks" } } },
+    { "type": "command", "id": "com.cdcplatform.console.alerts", "label": "告警中心", "icon": "assets/cdc-console.svg", "action": { "type": "open-workbench", "workbench": "com.cdcplatform.console.main", "presentation": "tab", "context": { "route": "/alerts" } } }
+  ]
+}

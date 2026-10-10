@@ -1,0 +1,11 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "assets/cdc-console.svg": "c489e1d4f9127dd7e13ba513666ec4feb5ce1e7b38b058dc49f65990d0b57696",
+    "dbx-plugin.toml": "303c6426a10aeeb49de61eb9ef298aaac0582e50b7318b0cd7458b497d0a34d2",
+    "manifest.json": "09de87587aca1b476c2986defc8ecdaba4b3e01608ac0628179c68b08b7732d2",
+    "ui/assets/index-ajHb0Ht0.css": "0be51f1487dbab4d97f3f5c13e4e2b8b44dba925705dd5ca545394d24e7408f6",
+    "ui/assets/index-CHLNHgDl.js": "ebd4526e28796d0b1841cf0ab2afdbb772d31c6e11b94d83ed9a995949191f1b",
+    "ui/index.html": "6e241d09f9232a09024a5be38fb208aeae4f8f7228b11600f29378b266309599"
+  }
+}

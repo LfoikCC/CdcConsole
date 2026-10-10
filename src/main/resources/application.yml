@@ -1,0 +1,53 @@
+server:
+  port: ${SERVER_PORT:8080}
+backend:
+  auth:
+    mode: ${CDC_BACKEND_AUTH_MODE:NONE}
+    issuer: ${CDC_BACKEND_AUTH_ISSUER:}
+    audience: ${CDC_BACKEND_AUTH_AUDIENCE:}
+  cors-allowed-origins: ${CDC_BACKEND_CORS_ALLOWED_ORIGINS:*}
+spring:
+  application:
+    name: cdc-platform
+  datasource:
+    url: jdbc:h2:file:${CDC_DATA_DIR:./data}/config/cdc;AUTO_SERVER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: never
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+  jackson:
+    default-property-inclusion: non_null
+cdc:
+  time-zone: ${CDC_TIME_ZONE:Asia/Shanghai}
+  cache:
+    directory: ${CDC_DATA_DIR:./data}/cache
+    segment-size-mb: ${CDC_SEGMENT_SIZE_MB:100}
+    retention-days: ${CDC_RETENTION_DAYS:7}
+  delivery:
+    max-pending-bytes: ${CDC_DELIVERY_MAX_PENDING_BYTES:10737418240}
+    max-attempts: ${CDC_DELIVERY_MAX_ATTEMPTS:6}
+    stream-load-max-bytes: ${CDC_STREAM_LOAD_MAX_BYTES:10485760}
+  poller:
+    tick-ms: ${CDC_POLLER_TICK_MS:100}
+  metrics:
+    retention-days: ${CDC_METRICS_RETENTION_DAYS:7}
+    sample-ms: ${CDC_METRICS_SAMPLE_MS:60000}
+  profiles:
+    light-snapshot-chunk-size: ${CDC_LIGHT_SNAPSHOT_CHUNK_SIZE:10000}
+    heavy-snapshot-chunk-size: ${CDC_HEAVY_SNAPSHOT_CHUNK_SIZE:50000}
+    steady-batch-size: ${CDC_STEADY_BATCH_SIZE:500}
+    frequent-batch-size: ${CDC_FREQUENT_BATCH_SIZE:2000}
+    steady-poll-interval-ms: ${CDC_STEADY_POLL_INTERVAL_MS:1000}
+    frequent-poll-interval-ms: ${CDC_FREQUENT_POLL_INTERVAL_MS:200}
+  debezium:
+    directory: ${CDC_DATA_DIR:./data}/debezium
+    offset-flush-interval-ms: ${CDC_DEBEZIUM_OFFSET_FLUSH_MS:1000}
+logging:
+  level:
+    com.cdcplatform: INFO
