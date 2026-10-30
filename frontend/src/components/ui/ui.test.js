@@ -4,6 +4,19 @@ import { h, Fragment } from 'vue'
 import { CdcSelect, CdcOption, CdcTable, CdcTableColumn, CdcModal, CdcButton, CdcPagination, CdcMenu } from './index'
 
 describe('native CDC controls', () => {
+  it('keeps brand icons in selected controls and names in searchable options', async () => {
+    const wrapper=mount(CdcSelect,{props:{modelValue:'MYSQL',filterable:true},global:{stubs:{teleport:true}},slots:{default:()=>[h(CdcOption,{value:'MYSQL',label:'MySQL',brand:'MYSQL'}),h(CdcOption,{value:'KAFKA',label:'Kafka',brand:'KAFKA'})]}})
+    expect(wrapper.find('.select-trigger img').attributes('src')).toBe('/brands/mysql-small.png')
+    expect(wrapper.find('.select-trigger').text()).not.toContain('MySQL')
+    expect(wrapper.find('.select-trigger').attributes('aria-label')).toBe('MySQL')
+    await wrapper.find('.select-trigger').trigger('click')
+    expect(wrapper.findAll('[role=option]').map(o=>o.text())).toEqual(['MySQL','Kafka'])
+    await wrapper.find('input').setValue('kafka')
+    expect(wrapper.findAll('[role=option]')).toHaveLength(1)
+    await wrapper.find('[role=option]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')[0]).toEqual(['KAFKA'])
+    wrapper.unmount()
+  })
   it('navigates enabled dropdown options with keyboard and returns focus after selection',async()=>{
     const wrapper=mount(CdcSelect,{attachTo:document.body,props:{modelValue:'a'},slots:{default:()=>[h(CdcOption,{value:'a',label:'A',disabled:true}),h(CdcOption,{value:'b',label:'B'}),h(CdcOption,{value:'c',label:'C'})]}})
     const trigger=wrapper.find('.select-trigger')

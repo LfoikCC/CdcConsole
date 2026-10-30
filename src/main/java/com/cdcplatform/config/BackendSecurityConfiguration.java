@@ -1,69 +1,61 @@
 package com.cdcplatform.config;
-
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import com.cdcplatform.service.*;
+import com.cdcplatform.api.IdentityController;
+import jakarta.servlet.*;
+import jakarta.servlet.http.*;
+import org.springframework.context.annotation.*;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
-import org.springframework.security.oauth2.core.OAuth2TokenValidator;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtDecoders;
-import org.springframework.security.oauth2.jwt.JwtClaimValidator;
-import org.springframework.security.oauth2.jwt.JwtValidators;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.filter.OncePerRequestFilter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.*;
 @Configuration
 public class BackendSecurityConfiguration {
-    @Bean
-    SecurityFilterChain backendSecurity(HttpSecurity http, BackendProperties properties) throws Exception {
-        boolean bearer = "BEARER".equalsIgnoreCase(properties.getAuth().getMode());
-        http.csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.configurationSource(corsConfiguration(properties)))
-                .authorizeHttpRequests(auth -> {
-                    if (bearer) auth.requestMatchers("/api/**").authenticated();
-                    auth.requestMatchers("/", "/index.html", "/assets/**", "/favicon.ico").permitAll();
-                    auth.anyRequest().permitAll();
-                });
-        if (bearer) http.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> {}));
-        return http.build();
+ @Bean SecurityFilterChain backendSecurity(HttpSecurity http,ConsoleIdentityService identities,AuditLogService audit)throws Exception{
+  http.csrf(c->c.disable()).sessionManagement(c->c.sessionCreationPolicy(SessionCreationPolicy.STATELESS)).requestCache(c->c.disable()).formLogin(c->c.disable()).httpBasic(c->c.disable())
+   .exceptionHandling(c->c.authenticationEntryPoint((req,res,e)->error(res,401,"请先登录")).accessDeniedHandler((req,res,e)->error(res,403,"当前角色没有此操作权限")))
+   .authorizeHttpRequests(c->c.dispatcherTypeMatchers(DispatcherType.ASYNC,DispatcherType.ERROR).permitAll()
+    .requestMatchers("/api/auth/csrf","/api/auth/login").permitAll()
+    .requestMatchers(req->req.getRequestURI().startsWith("/api/")&&adminOnly(req)).hasRole("ADMIN")
+    .requestMatchers("/api/auth/password","/api/auth/logout").authenticated()
+    .requestMatchers(req->req.getRequestURI().startsWith("/api/")&&(!req.getMethod().equals("GET")||req.getRequestURI().equals("/api/audit-logs/export"))).hasAnyRole("ADMIN","OPERATOR")
+    .requestMatchers("/api/**").authenticated().anyRequest().permitAll())
+   .addFilterBefore(new OncePerRequestFilter(){
+    @Override protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws IOException,ServletException{
+     if(!req.getRequestURI().startsWith("/api/")){chain.doFilter(req,res);return;}
+     res.setHeader("Cache-Control","no-store");var session=identities.session(IdentityController.cookie(req));var user=identities.sessionUser(session);
+     if(user!=null){SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(user,null,List.of(new SimpleGrantedAuthority("ROLE_"+user.role()))));req.setAttribute("audit-user",user);}
+     req.setAttribute("request-id",UUID.randomUUID().toString());Object before=audit.before(req);
+     try{
+      if(!Set.of("GET","HEAD","OPTIONS").contains(req.getMethod())&&(session==null||!MessageDigest.isEqual(session.csrf().getBytes(StandardCharsets.UTF_8),Objects.toString(req.getHeader("X-CSRF-Token"),"").getBytes(StandardCharsets.UTF_8)))){error(res,user==null?401:403,"会话或安全令牌已失效，请刷新后重试");return;}
+      chain.doFilter(req,res);
+     }finally{audit.recordRequest(req,res,before);}
     }
-
-    @Bean
-    @ConditionalOnProperty(prefix = "backend.auth", name = "mode", havingValue = "BEARER")
-    JwtDecoder jwtDecoder(BackendProperties properties) {
-        if (properties.getAuth().getIssuer().isBlank()) throw new IllegalStateException("backend.auth.issuer is required when backend.auth.mode=BEARER");
-        NimbusJwtDecoder decoder = (NimbusJwtDecoder) JwtDecoders.fromIssuerLocation(properties.getAuth().getIssuer());
-        OAuth2TokenValidator<Jwt> issuer = JwtValidators.createDefaultWithIssuer(properties.getAuth().getIssuer());
-        OAuth2TokenValidator<Jwt> validator = issuer;
-        if (!properties.getAuth().getAudience().isBlank()) {
-            var expected = properties.getAuth().getAudience();
-            validator = new DelegatingOAuth2TokenValidator<>(issuer,
-                    new JwtClaimValidator<Collection<String>>("aud", aud -> aud != null && aud.contains(expected)));
-        }
-        decoder.setJwtValidator(validator);
-        return decoder;
-    }
-
-    private CorsConfigurationSource corsConfiguration(BackendProperties properties) {
-        var cors = new CorsConfiguration();
-        List<String> origins = Arrays.stream(properties.getCorsAllowedOrigins().split(","))
-                .map(String::trim).filter(value -> !value.isBlank()).toList();
-        cors.setAllowedOrigins(origins);
-        cors.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        cors.setAllowedHeaders(List.of("Authorization", "Content-Type", "Last-Event-ID"));
-        cors.setExposedHeaders(List.of("Last-Event-ID"));
-        cors.setAllowCredentials(!origins.contains("*"));
-        var source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", cors);
-        return source;
-    }
+   },UsernamePasswordAuthenticationFilter.class);
+  return http.build();
+ }
+ private static boolean adminOnly(HttpServletRequest req){
+  String p=req.getRequestURI(),m=req.getMethod();
+  if(p.startsWith("/api/users")||p.startsWith("/api/mail")||p.equals("/api/settings"))return true;
+  if(m.equals("GET"))return false;
+  if(p.equals("/api/auth/password")||p.equals("/api/auth/logout")||p.equals("/api/auth/login"))return false;
+  return !p.matches("/api/tasks/\\d+/actions/(start|pause|resume|stop)")&&!p.matches("/api/(sources|targets)/\\d+/probe")
+   &&!p.matches("/api/alerts/\\d+/(acknowledge|resolve)")&&!p.matches("/api/tasks/\\d+/delivery-batches/[^/]+/retry")
+   &&!p.matches("/api/tasks/\\d+/(subscriptions/\\d+/)?reconciliations")
+   &&!p.matches("/api/tasks/\\d+/subscriptions/\\d+/actions/(pause|resume|retry-initialization)")
+   &&!p.matches("/api/tasks/\\d+/checkpoints/diagnose")&&!p.matches("/api/tasks/\\d+/recoveries(/precheck|/[^/]+/actions/(pause|resume|retry))?")
+   &&!p.matches("/api/subscriptions/\\d+/(actions/(pause|resume)|delivery-batches/[^/]+/retry)")
+   // 数据开发：运行与预览对 OPERATOR 开放（与 /api/tasks 的启停一致），增删改仍限 ADMIN
+   &&!p.matches("/api/flows/\\d+/runs")
+   &&!p.matches("/api/flows/\\d+/nodes/[^/]+/preview")
+   &&!p.matches("/api/flows/validate");
+ }
+ private static void error(HttpServletResponse r,int status,String text)throws IOException{r.setStatus(status);r.setContentType("application/json;charset=UTF-8");r.getWriter().write("{\"error\":\""+text+"\"}");}
 }

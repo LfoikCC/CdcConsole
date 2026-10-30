@@ -1,5 +1,6 @@
-import { defineComponent, h, ref, watch, nextTick, Teleport, Fragment, provide, inject, onMounted, onBeforeUnmount } from 'vue'
+import { defineComponent, h, ref, watch, nextTick, Teleport, Fragment, provide, inject, onMounted, onBeforeUnmount, getCurrentInstance } from 'vue'
 import { X, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-vue-next'
+import DatabaseBrand from '../DatabaseBrand.vue'
 
 function nodes(children) {
   return (children || []).flatMap(node => node.type === Fragment ? nodes(node.children) : [node]).filter(node => typeof node.type !== 'symbol')
@@ -19,7 +20,7 @@ export const CdcButton = defineComponent({
 let modalSequence = 0
 export const CdcModal = defineComponent({
   inheritAttrs: false,
-  props: { modelValue: Boolean, title: String, width: String, beforeClose: Function }, emits: ['update:modelValue', 'close'],
+  props: { modelValue: Boolean, title: String, width: String, top: String, beforeClose: Function }, emits: ['update:modelValue', 'close'],
   setup(props, { slots, emit, attrs }) {
     const panel = ref(), titleId = `modal-title-${++modalSequence}`
     let previousFocus
@@ -37,8 +38,8 @@ export const CdcModal = defineComponent({
       if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.value)) { event.preventDefault(); last.focus() }
       else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel.value)) { event.preventDefault(); first.focus() }
     }
-    return () => props.modelValue ? h(Teleport, { to: 'body' }, h('div', { class: 'overlay show', onClick: e => e.target === e.currentTarget && close() },
-      h('section', { ...attrs, ref: panel, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: -1, class: ['modal', attrs.class], style: { width: props.width || '520px' }, onKeydown: keydown }, [
+    return () => props.modelValue ? h(Teleport, { to: 'body' }, h('div', { class: 'overlay show', style: props.top ? { alignItems: 'flex-start' } : undefined, onClick: e => e.target === e.currentTarget && close() },
+      h('section', { ...attrs, ref: panel, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: -1, class: ['modal', attrs.class], style: { width: props.width || '520px', marginTop: props.top || undefined }, onKeydown: keydown }, [
         h('header', { class: 'modal-head' }, [h('h2', { id: titleId, class: 'modal-title' }, props.title), h('button', { class: 'close-x', type: 'button', onClick: close, 'aria-label': '关闭' }, h(X, { size: 16 }))]),
         h('div', { class: 'modal-body' }, slots.default?.()), slots.footer && h('footer', { class: 'modal-foot' }, slots.footer())
       ]))) : null
@@ -57,7 +58,7 @@ export const CdcInput = defineComponent({
 export const CdcInputNumber = defineComponent({ props: { ...modelProps, min: Number, max: Number }, emits: updateEvents,
   setup: (props, { emit }) => () => h('input', { type: 'number', value: props.modelValue, min: props.min, max: props.max, disabled: props.disabled,
     onInput: e => emit('update:modelValue', e.target.value === '' ? null : Number(e.target.value)), onChange: e => control(emit, e.target.value === '' ? null : Number(e.target.value)) }) })
-export const CdcOption = defineComponent({ props: { label: String, value: null, disabled: Boolean }, setup: () => () => null })
+export const CdcOption = defineComponent({ props: { label: String, value: null, disabled: Boolean, brand: String }, setup: () => () => null })
 export const CdcSelect = defineComponent({
   inheritAttrs: false, props: { ...modelProps, multiple: Boolean, clearable: Boolean, filterable: Boolean, placeholder: String }, emits: updateEvents,
   setup(props, { slots, attrs, emit }) {
@@ -67,7 +68,7 @@ export const CdcSelect = defineComponent({
     onMounted(() => { document.addEventListener('pointerdown', outside); window.addEventListener('scroll', closeOnScroll, true); window.addEventListener('resize', closeOnScroll) })
     onBeforeUnmount(() => { document.removeEventListener('pointerdown', outside); window.removeEventListener('scroll', closeOnScroll, true); window.removeEventListener('resize', closeOnScroll) })
     watch(open, value => { if (value && root.value) { const box = root.value.getBoundingClientRect(); position.value = { position: 'fixed', left: `${Math.max(8, Math.min(box.left, innerWidth - Math.max(box.width,160) - 8))}px`, top: `${Math.max(8,Math.min(box.bottom + 4, innerHeight - 280))}px`, width: `${Math.max(box.width,160)}px`, right: 'auto', zIndex: 400 } } })
-    function options() { return nodes(slots.default?.()).filter(n => n.type === CdcOption).map(n => n.props || {}) }
+    function options() { return nodes(slots.default?.()).filter(n => n.type === CdcOption).map(n => ({ ...n.props, content: n.children?.default })) }
     const selected = value => props.multiple ? (props.modelValue || []).includes(value) : props.modelValue === value
     function choose(option) {
       if (option.disabled) return
@@ -75,16 +76,17 @@ export const CdcSelect = defineComponent({
       control(emit, value); if (!props.multiple) { open.value = false; nextTick(()=>root.value?.querySelector('.select-trigger')?.focus()) }
     }
     return () => {
-      const all = options(), labels = all.filter(o => selected(o.value)).map(o => o.label ?? String(o.value))
+      const all = options(), chosen = all.filter(o => selected(o.value)), labels = chosen.map(o => o.label ?? String(o.value))
+      const selection = chosen.some(o => o.brand) ? chosen.map(o => o.brand ? h(DatabaseBrand, { type: o.brand, label: o.content ? o.label : undefined }) : h('span', o.label ?? String(o.value))) : labels.join('、')
       return h('div', { ...attrs, ref: root, class: ['select-control', attrs.class] }, [
-        h('button', { class: 'select-trigger', type: 'button', disabled: props.disabled, 'aria-expanded': open.value, 'aria-haspopup': 'listbox', onClick: () => { open.value = !open.value; query.value = '' },
+        h('button', { class: 'select-trigger', type: 'button', disabled: props.disabled, title: labels.join('、') || props.placeholder, 'aria-label': attrs['aria-label'] || labels.join('、') || props.placeholder || '请选择', 'aria-expanded': open.value, 'aria-haspopup': 'listbox', onClick: () => { open.value = !open.value; query.value = '' },
           onKeydown: e => { if (e.key === 'Escape') { e.stopPropagation(); open.value = false } if (['ArrowDown','ArrowUp'].includes(e.key)) { e.preventDefault(); open.value = true; nextTick(() => { const choices=popup.value?.querySelectorAll('.select-list button:not(:disabled)'); (e.key==='ArrowUp'?choices?.[choices.length-1]:choices?.[0])?.focus() }) } } },
-        [h('span', { class: !labels.length && 'dim' }, labels.join('、') || props.placeholder || '请选择'), h(ChevronDown, { size: 12 })]),
+        [h('span', { class: ['select-value', !labels.length && 'dim'] }, chosen.length ? selection : props.placeholder || '请选择'), h(ChevronDown, { size: 12 })]),
         open.value && h(Teleport, { to: 'body' }, h('div', { ref: popup, class: 'select-popover', style: position.value, onKeydown: e => { if (e.key === 'Escape') { e.stopPropagation(); open.value = false; root.value.querySelector('.select-trigger').focus() } if (e.key === 'Tab') { open.value = false; root.value.querySelector('.select-trigger').focus() } } }, [
           props.filterable && h('input', { value: query.value, placeholder: '搜索', 'aria-label': '筛选选项', onInput: e => query.value = e.target.value }),
           h('div', { class: 'select-list', role: 'listbox', 'aria-multiselectable': props.multiple, onKeydown: e => { if (e.key === 'Escape') { open.value = false; root.value.querySelector('.select-trigger').focus() } if (['ArrowDown','ArrowUp'].includes(e.key)) { e.preventDefault(); const buttons = Array.from(e.currentTarget.querySelectorAll('button:not(:disabled)')); const index = buttons.indexOf(document.activeElement); buttons[(index + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus() } } }, [
             props.clearable && h('button', { type: 'button', onClick: () => { control(emit, props.multiple ? [] : ''); open.value = false } }, '清除选择'),
-            ...all.filter(o => !query.value || String(o.label || o.value).toLowerCase().includes(query.value.toLowerCase())).map(o => h('button', { type: 'button', role: 'option', 'aria-selected': selected(o.value), disabled: o.disabled, class: selected(o.value) && 'selected', onClick: () => choose(o) }, [props.multiple && h('span', { class: 'option-check' }, selected(o.value) ? '✓' : ''), o.label || String(o.value)]))
+            ...all.filter(o => !query.value || String(o.label || o.value).toLowerCase().includes(query.value.toLowerCase())).map(o => h('button', { type: 'button', role: 'option', 'aria-selected': selected(o.value), disabled: o.disabled, class: selected(o.value) && 'selected', onClick: () => choose(o) }, [props.multiple && h('span', { class: 'option-check' }, selected(o.value) ? '✓' : ''), o.content ? o.content() : o.brand ? h(DatabaseBrand, {type:o.brand,label:o.label,showName:true}) : o.label || String(o.value)]))
           ])
         ]))
       ])
@@ -100,41 +102,70 @@ const radioKey = Symbol('radio')
 export const CdcRadioGroup = defineComponent({ props: modelProps, emits: updateEvents, setup(props, { slots, emit }) { provide(radioKey, { props, emit }); return () => h('div', { class: 'segmented', role: 'group' }, slots.default?.()) } })
 export const CdcRadioButton = defineComponent({ props: { value: null }, setup(props, { slots }) { const group = inject(radioKey); return () => h('button', { type: 'button', class: group.props.modelValue === props.value && 'active', 'aria-pressed': group.props.modelValue === props.value, onClick: () => control(group.emit, props.value) }, slots.default?.()) } })
 
-export const CdcTag = defineComponent({ props: { type: String }, setup: (props, { slots }) => () => h('span', { class: ['badge', `badge-${props.type || 'muted'}`] }, [h('i', { class: 'dot' }), slots.default?.()]) })
-export const CdcAlert = defineComponent({ props: { type: String, title: String, description: String }, setup: (props, { slots }) => () => h('div', { class: ['alert-bar', props.type || 'info'], role: props.type === 'error' ? 'alert' : 'status' }, [h('div', [h('strong', props.title), props.description && h('p', props.description), slots.default?.()])]) })
-export const CdcEmpty = defineComponent({ props: { description: String }, setup: (props, { slots }) => () => h('div', { class: 'empty-state' }, [props.description || '暂无数据', slots.default?.()]) })
+export const CdcTag = defineComponent({ props: { type: String, size: String, effect: String }, setup: (props, { slots }) => () => h('span', { class: ['badge', `badge-${props.type || 'muted'}`] }, [h('i', { class: 'dot' }), slots.default?.()]) })
+export const CdcAlert = defineComponent({ props: { type: String, title: String, description: String, showIcon: Boolean, closable: Boolean }, setup: (props, { slots }) => () => h('div', { class: ['alert-bar', props.type || 'info'], role: props.type === 'error' ? 'alert' : 'status' }, [h('div', [h('strong', props.title), props.description && h('p', props.description), slots.default?.()])]) })
+export const CdcEmpty = defineComponent({ props: { description: String, imageSize: [String, Number] }, setup: (props, { slots }) => () => h('div', { class: 'empty-state' }, [props.description || '暂无数据', slots.default?.()]) })
 export const CdcDivider = defineComponent({ setup: (_, { slots }) => () => h('div', { class: 'form-section-title' }, slots.default?.()) })
 export const CdcTableColumn = defineComponent({ setup: () => () => null })
 export const CdcTable = defineComponent({
   props: { data: { type: Array, default: () => [] }, maxHeight: [String, Number], height: [String, Number] }, emits: ['row-click'],
-  setup: (props, { slots, emit }) => () => {
-    const columns = nodes(slots.default?.()).filter(n => n.type === CdcTableColumn)
-    return h('div', { class: 'table-wrap', style: { maxHeight: props.maxHeight ? `${props.maxHeight}px` : undefined } }, h('table', [
-      h('thead', h('tr', columns.map(n => h('th', { style: { width: n.props?.width ? `${n.props.width}px` : undefined, minWidth: n.props?.['min-width'] ? `${n.props['min-width']}px` : undefined } }, n.props?.label)))),
-      h('tbody', props.data.length ? props.data.map((row, index) => h('tr', { key: row.id ?? index, onClick: () => emit('row-click', row) }, columns.map(n => h('td', n.children?.default ? n.children.default({ row, $index: index }) : row[n.props?.prop] ?? '-')))) : h('tr', h('td', { colspan: columns.length || 1 }, slots.empty?.() || h(CdcEmpty))))
-    ]))
+  setup: (props, { slots, emit }) => {
+    // Rows are only focusable when the parent actually listens for row-click, so
+    // read-only tables do not pollute the tab order.
+    const instance = getCurrentInstance()
+    const interactive = () => Boolean(instance?.vnode.props?.onRowClick)
+    const activate = row => () => emit('row-click', row)
+    return () => {
+      const columns = nodes(slots.default?.()).filter(n => n.type === CdcTableColumn)
+      const clickable = interactive()
+      return h('div', { class: 'table-wrap', style: { maxHeight: props.maxHeight ? `${props.maxHeight}px` : undefined } }, h('table', [
+        h('thead', h('tr', columns.map(n => h('th', { style: { width: n.props?.width ? `${n.props.width}px` : undefined, minWidth: n.props?.['min-width'] ? `${n.props['min-width']}px` : undefined } }, n.props?.label)))),
+        h('tbody', props.data.length ? props.data.map((row, index) => h('tr', {
+          key: row.id ?? index,
+          tabindex: clickable ? 0 : undefined,
+          role: clickable ? 'button' : undefined,
+          'aria-label': clickable ? `查看 ${row.name || row.sourceTable || row.id || '详情'}` : undefined,
+          onClick: activate(row),
+          onKeydown: e => { if (!clickable) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); emit('row-click', row) } }
+        }, columns.map(n => h('td', n.children?.default ? n.children.default({ row, $index: index }) : row[n.props?.prop] ?? '-')))) : h('tr', h('td', { colspan: columns.length || 1 }, slots.empty?.() || h(CdcEmpty))))
+      ]))
+    }
   }
 })
-export const CdcPagination = defineComponent({ props: { currentPage: { type: Number, default: 1 }, total: Number, pageSize: { type: Number, default: 20 } }, emits: ['update:currentPage', 'current-change'], setup(props, { emit }) { const change = page => { emit('update:currentPage', page); emit('current-change', page) }; return () => h('div', { class: 'pagination' }, [h('span', { class: 'dim' }, `共 ${props.total || 0} 条`), h('button', { class: 'icon-btn', disabled: props.currentPage <= 1, 'aria-label': '上一页', onClick: () => change(props.currentPage - 1) }, h(ChevronLeft, { size: 14 })), h('span', `${props.currentPage} / ${Math.max(1, Math.ceil((props.total || 0) / props.pageSize))}`), h('button', { class: 'icon-btn', disabled: props.currentPage * props.pageSize >= (props.total || 0), 'aria-label': '下一页', onClick: () => change(props.currentPage + 1) }, h(ChevronRight, { size: 14 }))]) } })
+export const CdcPagination = defineComponent({ props: { currentPage: { type: Number, default: 1 }, total: Number, pageSize: { type: Number, default: 20 }, layout: String }, emits: ['update:currentPage', 'current-change'], setup(props, { emit }) { const change = page => { emit('update:currentPage', page); emit('current-change', page) }; return () => h('div', { class: 'pagination' }, [h('span', { class: 'dim' }, `共 ${props.total || 0} 条`), h('button', { class: 'icon-btn', disabled: props.currentPage <= 1, 'aria-label': '上一页', onClick: () => change(props.currentPage - 1) }, h(ChevronLeft, { size: 14 })), h('span', `${props.currentPage} / ${Math.max(1, Math.ceil((props.total || 0) / props.pageSize))}`), h('button', { class: 'icon-btn', disabled: props.currentPage * props.pageSize >= (props.total || 0), 'aria-label': '下一页', onClick: () => change(props.currentPage + 1) }, h(ChevronRight, { size: 14 }))]) } })
 export const CdcCollapse = defineComponent({ setup: (_, { slots }) => () => h('div', { class: 'accordion' }, slots.default?.()) })
 export const CdcCollapseItem = defineComponent({ props: { title: String }, setup(props, { slots }) { const open = ref(false); return () => h('section', { class: 'acc' }, [h('button', { class: 'acc-head', type: 'button', 'aria-expanded': open.value, onClick: () => open.value = !open.value }, [h(ChevronRight, { size: 12, style: { transform: open.value ? 'rotate(90deg)' : '' } }), slots.title?.() || props.title]), open.value && h('div', { class: 'acc-body' }, slots.default?.())]) } })
 export const CdcStep = defineComponent({ setup: () => () => null })
-export const CdcSteps = defineComponent({ props: { active: Number }, setup: (props, { slots }) => () => h('ol', { class: 'steps' }, nodes(slots.default?.()).map((node, index) => h('li', { class: [index === props.active && 'active', index < props.active && 'done'], 'aria-current': index === props.active ? 'step' : undefined }, [h('span', { class: 'step-number' }, String(index + 1)), h('span', node.props?.title)]))) })
+export const CdcSteps = defineComponent({ props: { active: Number, alignCenter: Boolean }, setup: (props, { slots }) => () => h('ol', { class: 'steps' }, nodes(slots.default?.()).map((node, index) => h('li', { class: [index === props.active && 'active', index < props.active && 'done'], 'aria-current': index === props.active ? 'step' : undefined }, [h('span', { class: 'step-number' }, String(index + 1)), h('span', node.props?.title)]))) })
 export const CdcTabPane = defineComponent({ setup: (_, { slots }) => () => slots.default?.() })
 export const CdcTabs = defineComponent({ props: { modelValue: String }, emits: ['update:modelValue', 'tab-change'], setup: (props, { slots, emit }) => () => { const panes = nodes(slots.default?.()).filter(n => n.type === CdcTabPane); const current = props.modelValue || panes[0]?.props?.name; return h('div', { class: 'tabs' }, [h('div', { class: 'tab-list', role: 'tablist' }, panes.map(n => h('button', { type: 'button', role: 'tab', 'aria-selected': current === n.props?.name, class: current === n.props?.name && 'active', onClick: () => { emit('update:modelValue', n.props.name); emit('tab-change', n.props.name) } }, n.props?.label))), h('div', { role: 'tabpanel' }, panes.find(n => n.props?.name === current)?.children?.default?.())]) } })
-export const CdcDatePicker = defineComponent({ props: modelProps, emits: updateEvents, setup(props, { emit }) { const format = date => { if (!date) return ''; const d = new Date(date); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` }; return () => h('div', { class: 'date-range' }, [0,1].map(index => h('input', { type: 'datetime-local', 'aria-label': index ? '结束时间' : '开始时间', value: format(props.modelValue?.[index]), onChange: e => { const range = [...(props.modelValue || [])]; range[index] = e.target.value ? new Date(e.target.value) : null; control(emit, range) } }))) } })
+export const CdcDatePicker = defineComponent({ props: { ...modelProps, type: String, startPlaceholder: String, endPlaceholder: String }, emits: updateEvents, setup(props, { emit }) { const format = date => { if (!date) return ''; const d = new Date(date); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` }; return () => h('div', { class: 'date-range' }, [0,1].map(index => h('input', { type: 'datetime-local', 'aria-label': index ? '结束时间' : '开始时间', value: format(props.modelValue?.[index]), onChange: e => { const range = [...(props.modelValue || [])]; range[index] = e.target.value ? new Date(e.target.value) : null; control(emit, range) } }))) } })
 
 export const CdcMenu = defineComponent({
-  setup(_, { slots }) {
+  props: {
+    label: { type: String, default: '更多操作' },
+    align: { type: String, default: 'end' },
+    offset: { type: Number, default: 4 },
+    panelClass: { type: String, default: '' },
+    panelWidth: { type: [String, Number], default: null }
+  },
+  setup(props, { slots }) {
     const open = ref(false), root = ref(), popup = ref(), position = ref({ visibility: 'hidden' })
     function close(restoreFocus = false) { open.value = false; if (restoreFocus) root.value?.querySelector('.menu-trigger').focus() }
     function place() {
       if (!root.value || !popup.value) return
+      // 先定宽再测量：否则量到的是上一次的宽度，left 会按错误的宽度算，面板会伸出视口
+      if (props.panelWidth != null) {
+        popup.value.style.width = typeof props.panelWidth === 'number' ? `${props.panelWidth}px` : props.panelWidth
+      }
       const trigger = root.value.getBoundingClientRect(), menu = popup.value.getBoundingClientRect(), margin = 8
       const below = innerHeight - trigger.bottom - margin
       const height = Math.min(menu.height, innerHeight - margin * 2)
-      const top = menu.height > below && trigger.top > below ? trigger.top - height - 4 : trigger.bottom + 4
-      position.value = { position: 'fixed', left: `${Math.max(margin,Math.min(trigger.right-menu.width,innerWidth-menu.width-margin))}px`, top: `${Math.max(margin,Math.min(top,innerHeight-height-margin))}px`, right: 'auto', zIndex: 400, maxHeight: `${innerHeight-margin*2}px`, overflowY: 'auto', visibility: 'visible' }
+      const top = menu.height > below && trigger.top > below ? trigger.top - height - props.offset : trigger.bottom + props.offset
+      const left = props.align === 'start' ? trigger.left : trigger.right - menu.width
+      const style = { position: 'fixed', left: `${Math.max(margin,Math.min(left,innerWidth-menu.width-margin))}px`, top: `${Math.max(margin,Math.min(top,innerHeight-height-margin))}px`, right: 'auto', zIndex: 400, maxHeight: `${innerHeight-margin*2}px`, overflowY: 'auto', visibility: 'visible' }
+      if (props.panelWidth != null) style.width = typeof props.panelWidth === 'number' ? `${props.panelWidth}px` : props.panelWidth
+      position.value = style
     }
     watch(open, async value => { if (value) { position.value = { position:'fixed',visibility:'hidden' }; await nextTick(); place() } })
     function outside(event) { if (!root.value?.contains(event.target) && !popup.value?.contains(event.target)) close() }
@@ -150,8 +181,8 @@ export const CdcMenu = defineComponent({
     onMounted(() => { document.addEventListener('pointerdown',outside); window.addEventListener('scroll',scroll,true); window.addEventListener('resize',place) })
     onBeforeUnmount(() => { document.removeEventListener('pointerdown',outside); window.removeEventListener('scroll',scroll,true); window.removeEventListener('resize',place) })
     return () => h('div', { class: 'menu-wrap', ref: root, onFocusout: focusOut, onKeydown: keydown }, [
-      h('button', { type:'button',class:'icon-btn menu-trigger','aria-label':'更多操作','aria-expanded':open.value,'aria-haspopup':'menu',onClick:()=>open.value=!open.value }, '⋯'),
-      open.value && h(Teleport,{to:'body'},h('div',{ref:popup,class:'menu show',role:'menu',style:position.value,onFocusout:focusOut,onKeydown:keydown,onClick:event=>{if(event.target.closest('button:not(:disabled)'))close(true)}},slots.default?.()))
+      h('button', { type:'button',class:'icon-btn menu-trigger','aria-label':props.label,'aria-expanded':open.value,'aria-haspopup':'menu',onClick:()=>open.value=!open.value }, slots.trigger?.() || '⋯'),
+      open.value && h(Teleport,{to:'body'},h('div',{ref:popup,class:['menu','show',props.panelClass],role:'menu',style:position.value,onFocusout:focusOut,onKeydown:keydown,onClick:event=>{if(event.target.closest('button:not(:disabled)'))close(true)}},slots.default?.()))
     ])
   }
 })

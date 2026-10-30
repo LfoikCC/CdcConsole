@@ -1,4 +1,3 @@
-import { dbxHost } from './hostAdapter'
 import { runtimeEventsPath } from './api'
 
 export class AuthenticatedSseClient {
@@ -12,8 +11,6 @@ export class AuthenticatedSseClient {
     this.reconnectTimer = null
     this.heartbeatTimer = null
     this.restartRequested = false
-    this.backendUrl = null
-    this.tokenUnsubscribe = dbxHost.onBackendTokenChange(() => this.restart())
     this.visibilityHandler = () => { if (!document.hidden && !this.controller) this.connect() }
   }
   async connect() {
@@ -21,14 +18,11 @@ export class AuthenticatedSseClient {
     const controller = new AbortController()
     this.controller = controller
     try {
-      const config = await dbxHost.getBackendConfig()
       if (controller.signal.aborted || this.closed) return
-      if (this.backendUrl !== config.baseUrl) this.lastEventId = null
-      this.backendUrl = config.baseUrl
       const headers = { Accept: 'text/event-stream' }
-      if (config.accessToken) headers.Authorization = `Bearer ${config.accessToken}`
       if (this.lastEventId) headers['Last-Event-ID'] = this.lastEventId
-      const response = await fetch(runtimeEventsPath(config.baseUrl), { headers, signal: controller.signal, credentials: config.accessToken ? 'omit' : 'include', cache: 'no-store' })
+      const response = await fetch(runtimeEventsPath(), { headers, signal: controller.signal, credentials: 'include', cache: 'no-store' })
+      if (response.status === 401) { this.stop(); window.dispatchEvent(new Event('cdc-session-expired')); return }
       if (!response.ok || !response.body) throw new Error(response.status === 401 ? '认证失效' : `SSE 连接失败 (${response.status})`)
       this.retry = 0
       this.onState?.({ connected: true })
@@ -87,7 +81,7 @@ export class AuthenticatedSseClient {
     this.heartbeatTimer = window.setTimeout(() => this.controller?.abort(), 45000)
   }
   start() { document.addEventListener('visibilitychange', this.visibilityHandler); this.connect() }
-  stop() { this.closed = true; clearTimeout(this.reconnectTimer); clearTimeout(this.heartbeatTimer); this.controller?.abort(); this.tokenUnsubscribe?.(); document.removeEventListener('visibilitychange', this.visibilityHandler) }
+  stop() { this.closed = true; clearTimeout(this.reconnectTimer); clearTimeout(this.heartbeatTimer); this.controller?.abort(); document.removeEventListener('visibilitychange', this.visibilityHandler) }
   restart() {
     if (this.closed) return
     clearTimeout(this.reconnectTimer)

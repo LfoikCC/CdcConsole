@@ -6,6 +6,10 @@ target/
 
 # 日志
 *.log
+logs/
+
+# 本地验证截图
+frontend/shots/
 
 # 系统文件
 .DS_Store

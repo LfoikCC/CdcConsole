@@ -3,14 +3,22 @@ import { createPinia } from 'pinia'
 import { installUi } from './components/ui'
 import './styles.css'
 import './monitor.css'
+import './operations.css'
+import './metabase-theme.css'
+// 数据开发的画布与抽屉样式，必须最后加载才能覆盖上面的通用规则
+import './styles/dev.css'
 import App from './App.vue'
 import router from './router'
-import { dbxHost } from './hostAdapter'
+import { initializeTheme } from './theme'
+import { permit } from './auth'
+import DatabaseBrand from './components/DatabaseBrand.vue'
 
 async function start() {
-  await dbxHost.initialize()
+  initializeTheme()
   const app = createApp(App).use(createPinia()).use(router)
   installUi(app)
+  app.component('DatabaseBrand',DatabaseBrand)
+  app.directive('permit', permit)
   app.mount('#app')
 }
 

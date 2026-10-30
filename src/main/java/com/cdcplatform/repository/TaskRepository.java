@@ -68,6 +68,13 @@ public class TaskRepository {
                 .query(Long.class).optional().orElse(null);
     }
 
+    /** A lightweight lifecycle guard, including internal subscription mappings. */
+    public boolean captureActive(long mappingId) {
+        var status = jdbc.sql("SELECT t.status FROM sync_task t JOIN sync_task_table st ON st.task_id=t.id WHERE st.mapping_id=:id")
+                .param("id", mappingId).query(String.class).optional();
+        return status.isEmpty() || Set.of("STARTING", "SNAPSHOTTING", "RUNNING", "DEGRADED").contains(status.get());
+    }
+
     public SyncMode syncModeForMapping(long mappingId) {
         return jdbc.sql("SELECT t.sync_mode FROM sync_task t JOIN sync_task_table st ON st.task_id=t.id WHERE st.mapping_id=:id")
                 .param("id", mappingId).query(String.class).optional().map(SyncMode::valueOf)

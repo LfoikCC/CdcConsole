@@ -38,16 +38,18 @@ public class SqlServerCdcPoller {
     private final DeliveryBatchRepository deliveryBatches;
     private final DeliveryService delivery;
     private final CaptureGroupService captureGroups;
+    private final CaptureProgressService progress;
     private final Map<Long, Long> nextPollAt = new ConcurrentHashMap<>();
     private final Map<Long, PollStatus> statuses = new ConcurrentHashMap<>();
     private final Map<Long, MySqlWorker> mysqlWorkers = new ConcurrentHashMap<>();
 
     public SqlServerCdcPoller(ConfigRepository repository, ConnectionProbeService connections, EventDispatchService dispatch,
                               ObjectMapper json, TaskRepository tasks, DeliveryBatchRepository deliveryBatches,
-                              DeliveryService delivery, CaptureGroupService captureGroups) {
+                              DeliveryService delivery, CaptureGroupService captureGroups, CaptureProgressService progress) {
         this.repository = repository; this.connections = connections; this.dispatch = dispatch; this.json = json;
         this.tasks = tasks;
         this.deliveryBatches = deliveryBatches; this.delivery = delivery; this.captureGroups = captureGroups;
+        this.progress=progress;
     }
 
     @Scheduled(fixedDelayString = "${cdc.poller.tick-ms:100}")
@@ -58,9 +60,10 @@ public class SqlServerCdcPoller {
         var polledGroups = new HashSet<Long>();
         for (var mapping : mappings) {
             if (!mapping.enabled()) continue;
+            if (!tasks.captureActive(mapping.id())) continue;
             try {
-                if (delivery.hasPending(mapping.id())) { delivery.trigger(mapping.id()); continue; }
                 var source = repository.source(mapping.sourceId(), true);
+                if (delivery.hasPending(mapping.id())) { delivery.trigger(mapping.id()); if(source.dbType()!=Types.DatabaseType.STARROCKS)continue; }
                 if (!source.enabled()) continue;
                 if (tasks.taskIdForMapping(mapping.id()) != null && source.dbType() != Types.DatabaseType.STARROCKS)
                     continue;
@@ -297,6 +300,7 @@ public class SqlServerCdcPoller {
     }
 
     void pollSnapshot(TableMapping mapping, com.cdcplatform.model.SourceConfig source) throws Exception {
+        long pollStarted=System.currentTimeMillis();
         String database = effectiveSourceDatabase(mapping, source);
         try (var connection = DriverManager.getConnection(connections.streamingUrl(source, database), source.username(), source.password())) {
             String checkpoint = repository.checkpoint(mapping.id());
@@ -314,7 +318,7 @@ public class SqlServerCdcPoller {
                 generation = cycle.generation();
                 marker = cycle.checkpoint();
                 if ("READY".equals(cycle.status())) {
-                    delivery.finalizeExtractionCycle(mapping.id(), generation);
+                    delivery.completeCapturedCycle(mapping.id(), generation,marker);
                     if (deliveryBatches.activeCycle(mapping.id()) == null) {
                         statuses.put(mapping.id(), new PollStatus(true, marker, null));
                         return;
@@ -327,7 +331,8 @@ public class SqlServerCdcPoller {
                     streamStage(mapping.id(), generation, "SELECT row_json FROM cdc_snapshot_stage WHERE mapping_id=:id AND generation=:generation ORDER BY row_key", Types.Operation.READ, Instant.now(), sequence);
                 }
                 deliveryBatches.markCycleReady(mapping.id(), generation, marker);
-                delivery.finalizeExtractionCycle(mapping.id(), generation);
+                delivery.completeCapturedCycle(mapping.id(), generation,marker);
+                progress.committed(captureGroups.ensureForMapping(mapping.id()),Map.of("poll_started_at",pollStarted));
                 statuses.put(mapping.id(), new PollStatus(true, marker, null));
                 return;
             }
@@ -336,7 +341,8 @@ public class SqlServerCdcPoller {
             streamStage(mapping.id(), generation, "SELECT n.row_json FROM cdc_snapshot_stage n LEFT JOIN cdc_snapshot s ON s.mapping_id=n.mapping_id AND s.row_key=n.row_key WHERE n.mapping_id=:id AND n.generation=:generation AND s.row_key IS NULL ORDER BY n.row_key", Types.Operation.CREATE, capturedAt, sequence);
             streamUpdates(mapping.id(), generation, capturedAt, sequence);
             deliveryBatches.markCycleReady(mapping.id(), generation, marker);
-            delivery.finalizeExtractionCycle(mapping.id(), generation);
+            delivery.completeCapturedCycle(mapping.id(), generation,marker);
+            progress.committed(captureGroups.ensureForMapping(mapping.id()),Map.of("poll_started_at",pollStarted));
             statuses.put(mapping.id(), new PollStatus(true, marker, null));
         }
     }
@@ -476,6 +482,7 @@ public class SqlServerCdcPoller {
         int part = sequence.getAndIncrement();
         var events = new ArrayList<>(buffer); buffer.clear();
         String position = "SNAPSHOT:" + generation + ":" + operation + ":" + part;
+        if(tasks.taskIdForMapping(mappingId)!=null){delivery.stage(events,position,position,generation);return;}
         var result = dispatch.acceptBatch(events, position, position, generation);
         if (!result.delivered()) throw new IllegalStateException(result.error());
     }

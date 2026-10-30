@@ -17,6 +17,11 @@ public class DeliveryBatchRepository {
 
     public DeliveryBatchRepository(JdbcClient jdbc) { this.jdbc = jdbc; }
 
+    public boolean subscriptionActive(long mappingId) {
+        return jdbc.sql("SELECT status FROM cdc_target_subscription WHERE mapping_id=:id")
+                .param("id",mappingId).query(String.class).optional().map("ACTIVE"::equals).orElse(true);
+    }
+
     /**
      * 将一个刚写入磁盘的 CDC 批次注册为 "STAGED" 状态。
      *
@@ -28,6 +33,15 @@ public class DeliveryBatchRepository {
      */
     @Transactional
     public boolean registerStaged(DeliveryBatch batch) {
+        return register(batch, null, null);
+    }
+
+    @Transactional
+    public boolean registerRecovery(DeliveryBatch batch, String recoveryId, Long sequence) {
+        return register(batch, recoveryId, sequence);
+    }
+
+    private boolean register(DeliveryBatch batch, String recoveryId, Long sequence) {
         long exists = jdbc.sql("SELECT COUNT(*) FROM cdc_delivery_batch WHERE batch_id=:id")
                 .param("id", batch.batchId()).query(Long.class).single();
         if (exists > 0) return false;
@@ -40,6 +54,12 @@ public class DeliveryBatchRepository {
                 .param("end", batch.sourceEndPosition()).param("path", batch.segmentPath())
                 .param("checksum", batch.checksum()).param("count", batch.eventCount())
                 .param("bytes", batch.payloadBytes()).update();
+        if (recoveryId != null) {
+            jdbc.sql("UPDATE cdc_delivery_batch SET recovery_id=:recovery,capture_sequence=:sequence,batch_kind='RECOVERY' WHERE batch_id=:id")
+                    .param("recovery",recoveryId).param("sequence",sequence).param("id",batch.batchId()).update();
+            return true;
+        }
+        if (batch.sourceStartPosition()!=null && batch.sourceStartPosition().startsWith("SUBSCRIPTION_")) return true;
         String position = batch.sourceEndPosition() == null || batch.sourceEndPosition().isBlank()
                 ? batch.batchId() : batch.sourceEndPosition();
         int changed = jdbc.sql("UPDATE sync_checkpoint SET capture_position_json=:position,generation=:generation," +
@@ -81,7 +101,7 @@ public class DeliveryBatchRepository {
      */
     public DeliveryBatch head(long mappingId) {
         return jdbc.sql("SELECT * FROM cdc_delivery_batch WHERE mapping_id=:mapping " +
-                        "AND status NOT IN ('SUCCEEDED','CANCELLED') ORDER BY created_at,batch_id LIMIT 1")
+                        "AND recovery_id IS NULL AND status NOT IN ('SUCCEEDED','CANCELLED') ORDER BY COALESCE((SELECT c.sequence_no FROM cdc_capture_batch c WHERE c.segment_path=cdc_delivery_batch.segment_path AND c.batch_kind<>'TARGET_SNAPSHOT' LIMIT 1),0),created_at,batch_id LIMIT 1")
                 .param("mapping", mappingId).query(this::map).optional().orElse(null);
     }
 
@@ -96,6 +116,11 @@ public class DeliveryBatchRepository {
     public boolean exists(String batchId) {
         return jdbc.sql("SELECT COUNT(*) FROM cdc_delivery_batch WHERE batch_id=:id").param("id", batchId)
                 .query(Long.class).single() > 0;
+    }
+
+    public boolean recoveryActive(long mappingId) {
+        return jdbc.sql("SELECT COUNT(*) FROM recovery_job WHERE mapping_id=:id AND status NOT IN ('SUCCEEDED','CANCELLED')")
+                .param("id",mappingId).query(Long.class).single()>0;
     }
 
     /**
@@ -150,6 +175,8 @@ public class DeliveryBatchRepository {
                         "updated_at=CURRENT_TIMESTAMP,last_error=NULL,next_retry_at=NULL WHERE batch_id=:id AND status<>'SUCCEEDED'")
                 .param("id", batchId).update();
         if (changed == 0) return false;
+        boolean recovery = jdbc.sql("SELECT COUNT(*) FROM cdc_delivery_batch WHERE batch_id=:id AND recovery_id IS NOT NULL")
+                .param("id",batchId).query(Long.class).single()>0;
         String position = batch.sourceEndPosition() == null || batch.sourceEndPosition().isBlank()
                 ? batch.batchId() : batch.sourceEndPosition();
         jdbc.sql("UPDATE sync_checkpoint SET delivery_position_json=:position,updated_at=CURRENT_TIMESTAMP " +
@@ -157,7 +184,7 @@ public class DeliveryBatchRepository {
                 .param("position", position).param("table", batch.taskTableId()).update();
         jdbc.sql("UPDATE sync_task_table SET processed_rows=processed_rows+:count,last_event_at=CURRENT_TIMESTAMP," +
                         "last_error=NULL,status='RUNNING' WHERE id=:table")
-                .param("count", batch.eventCount()).param("table", batch.taskTableId()).update();
+                .param("count", recovery ? 0 : batch.eventCount()).param("table", batch.taskTableId()).update();
         return true;
     }
 
@@ -194,8 +221,24 @@ public class DeliveryBatchRepository {
      * 注意：这里不是“成功即删”，而是先保留一段 retention 天数，达到阈值后才删除，防止回放/审计需求丢失。
      */
     public List<String> successfulFilesBefore(OffsetDateTime before) {
-        return jdbc.sql("SELECT segment_path FROM cdc_delivery_batch WHERE status='SUCCEEDED' AND delivered_at<:before")
+        return jdbc.sql("SELECT DISTINCT b.segment_path FROM cdc_delivery_batch b WHERE b.status='SUCCEEDED' AND b.delivered_at<:before " +
+                        "AND NOT EXISTS (SELECT 1 FROM cdc_delivery_batch x WHERE x.segment_path=b.segment_path AND x.status NOT IN ('SUCCEEDED','CANCELLED')) " +
+                        "AND NOT EXISTS (SELECT 1 FROM cdc_capture_batch c JOIN cdc_subscription_batch s ON s.capture_batch_id=c.capture_batch_id " +
+                        "JOIN cdc_target_subscription t ON t.id=s.subscription_id WHERE c.segment_path=b.segment_path AND t.status<>'CANCELLED' AND s.status<>'SUCCEEDED') " +
+                        "AND NOT EXISTS (SELECT 1 FROM recovery_file_pin p WHERE p.segment_path=b.segment_path) " +
+                        "AND NOT EXISTS (SELECT 1 FROM recovery_job r JOIN target_subscription_table t ON t.id=r.subscription_table_id " +
+                        "JOIN cdc_capture_batch c ON c.capture_group_id=t.capture_group_id WHERE c.segment_path=b.segment_path " +
+                        "AND r.status NOT IN ('SUCCEEDED','CANCELLED') AND c.sequence_no>r.cursor_sequence)")
                 .param("before", before).query(String.class).list();
+    }
+    public void updateCaptureMetadata(String path, List<com.cdcplatform.model.ChangeEvent> events) {
+        var sources=events.stream().map(com.cdcplatform.model.ChangeEvent::sourceEventAt).filter(java.util.Objects::nonNull).toList();
+        var captures=events.stream().map(com.cdcplatform.model.ChangeEvent::capturedAt).filter(java.util.Objects::nonNull).toList();
+        jdbc.sql("UPDATE cdc_capture_batch SET batch_kind='CAPTURE',source_event_at=:source,captured_from=:from,captured_to=:to WHERE segment_path=:path")
+                .param("source",sources.isEmpty()?null:OffsetDateTime.ofInstant(sources.getLast(),java.time.ZoneOffset.UTC))
+                .param("from",captures.isEmpty()?null:OffsetDateTime.ofInstant(captures.getFirst(),java.time.ZoneOffset.UTC))
+                .param("to",captures.isEmpty()?null:OffsetDateTime.ofInstant(captures.getLast(),java.time.ZoneOffset.UTC))
+                .param("path",path).update();
     }
 
     /**

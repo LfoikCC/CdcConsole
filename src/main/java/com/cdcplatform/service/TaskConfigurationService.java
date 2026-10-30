@@ -63,7 +63,7 @@ public class TaskConfigurationService {
             tasks.updateFingerprint(table.id(), table.structureFingerprint(), table.keyColumns());
         }
         tasks.start(id, resume);
-        task.tables().forEach(table -> delivery.resume(table.mappingId()));
+        tasks.runtimeTables(id).forEach(table -> delivery.resume(table.mappingId()));
         if (targetSubscriptions != null) targetSubscriptions.initializeForTask(id);
         events.publish("task", Map.of("taskId", id, "action", resume ? "resumed" : "started"));
     }
@@ -71,16 +71,17 @@ public class TaskConfigurationService {
     public void pause(long id) {
         var task = tasks.task(id);
         tasks.pause(id);
-        task.tables().forEach(table -> coordinator.stop(table.mappingId(), false));
-        task.tables().forEach(table -> delivery.suspend(table.mappingId()));
+        tasks.runtimeTables(id).forEach(table -> coordinator.stop(table.mappingId(), false));
+        tasks.runtimeTables(id).forEach(table -> delivery.suspendAndAwait(table.mappingId()));
         events.publish("task", Map.of("taskId", id, "action", "paused"));
     }
 
     public void stop(long id) {
         SyncTask task = tasks.task(id);
         tasks.stop(id);
+        tasks.runtimeTables(id).forEach(table -> coordinator.stop(table.mappingId(), false));
         task.tables().forEach(table -> { coordinator.stop(table.mappingId(), true); poller.reset(table.mappingId()); tasks.clearSnapshotPhase(table.id()); });
-        task.tables().forEach(table -> delivery.cancel(table.mappingId()));
+        tasks.runtimeTables(id).forEach(table -> { delivery.suspendAndAwait(table.mappingId()); delivery.cancel(table.mappingId()); });
         events.publish("task", Map.of("taskId", id, "action", "stopped"));
     }
 

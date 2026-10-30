@@ -12,7 +12,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.debezium.engine.DebeziumEngine;
-import io.debezium.engine.format.Json;
+import io.debezium.embedded.Connect;
+import io.debezium.engine.format.ChangeEventFormat;
+import io.debezium.engine.RecordChangeEvent;
+import org.apache.kafka.connect.source.SourceRecord;
+import org.apache.kafka.connect.json.JsonConverter;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +44,7 @@ public class TaskRuntimeCoordinator {
     private final CaptureGroupService captureGroups;
     private final RuntimeEventService events;
     private final ObjectMapper json;
+    private final CaptureProgressService progress;
     private final Path directory;
     private final int offsetFlushIntervalMs;
     private final int lightSnapshotSize;
@@ -57,7 +62,7 @@ public class TaskRuntimeCoordinator {
 
     public TaskRuntimeCoordinator(TaskRepository tasks, ConfigRepository configs, EventDispatchService dispatch, DeliveryService delivery,
                                   CaptureGroupService captureGroups,
-                                  RuntimeEventService events, ObjectMapper json,
+                                  RuntimeEventService events, ObjectMapper json, CaptureProgressService progress,
                                   @Value("${cdc.debezium.directory:./data/debezium}") Path directory,
                                   @Value("${cdc.debezium.offset-flush-interval-ms:1000}") int offsetFlushIntervalMs,
                                   @Value("${cdc.profiles.light-snapshot-chunk-size:10000}") int lightSnapshotSize,
@@ -68,6 +73,7 @@ public class TaskRuntimeCoordinator {
                                   @Value("${cdc.profiles.frequent-poll-interval-ms:200}") int frequentPollIntervalMs) {
         this.tasks = tasks; this.configs = configs; this.dispatch = dispatch; this.delivery = delivery; this.captureGroups = captureGroups; this.events = events;
         this.json = json; this.directory = directory; this.offsetFlushIntervalMs = offsetFlushIntervalMs;
+        this.progress=progress;
         this.lightSnapshotSize = lightSnapshotSize; this.heavySnapshotSize = heavySnapshotSize;
         this.steadyBatchSize = steadyBatchSize; this.frequentBatchSize = frequentBatchSize;
         this.steadyPollIntervalMs = steadyPollIntervalMs; this.frequentPollIntervalMs = frequentPollIntervalMs;
@@ -85,7 +91,7 @@ public class TaskRuntimeCoordinator {
             for (var table : tasks.runtimeTables(task.id())) {
                 if (!configs.mapping(table.mappingId()).enabled()) continue;
                 active.add(table.mappingId());
-                if (delivery.hasPending(table.mappingId())) { delivery.trigger(table.mappingId()); continue; }
+                if (delivery.hasPending(table.mappingId())) delivery.trigger(table.mappingId());
                 long groupId = captureGroups.ensureForMapping(table.mappingId());
                 Long groupWorker = groupWorkers.get(groupId);
                 if (groupWorker != null && workers.containsKey(groupWorker)) continue;
@@ -108,26 +114,32 @@ public class TaskRuntimeCoordinator {
             long groupId = captureGroups.ensureForMapping(mappingId);
             try { Files.deleteIfExists(offsetPath(groupId)); Files.deleteIfExists(historyPath(groupId)); }
             catch (Exception e) { throw new IllegalStateException("无法重置 Debezium 位点：" + e.getMessage(), e); }
+            progress.reset(groupId);
         }
     }
 
     private void startWorker(SyncTask task, SyncTaskTable table, SourceConfig source, long groupId) throws Exception {
+        progress.verifySource(groupId,source,table.sourceDatabase());
         Files.createDirectories(directory);
         Properties properties = properties(task, table, source, nextServerId(groupId), groupId);
-        var engine = DebeziumEngine.create(Json.class)
+        var converter=new JsonConverter();converter.configure(Map.of("schemas.enable",false),false);
+        var engine = DebeziumEngine.create(ChangeEventFormat.of(Connect.class))
                 .using(properties)
-                .notifying((List<io.debezium.engine.ChangeEvent<String, String>> records,
-                            DebeziumEngine.RecordCommitter<io.debezium.engine.ChangeEvent<String, String>> committer) -> {
+                .notifying((List<RecordChangeEvent<SourceRecord>> records,
+                            DebeziumEngine.RecordCommitter<RecordChangeEvent<SourceRecord>> committer) -> {
                     try {
                         var captured = new ArrayList<CapturedRecord>();
                         for (var record : records) {
-                            var value = captureRecord(task, table, record);
+                            var sourceRecord=record.record();
+                            var value = sourceRecord.value()==null?null:captureRecord(task, table,
+                                    converter.fromConnectData(sourceRecord.topic(),sourceRecord.valueSchema(),sourceRecord.value()));
                             if (value != null) captured.add(value);
                         }
                         if (!captured.isEmpty()) {
                             delivery.stage(captured.stream().map(CapturedRecord::event).toList(),
-                                    captured.getFirst().position(), captured.getLast().position(), 0);
+                                    captured.getFirst().position(), captured.getLast().position(), progress.generation(groupId));
                         }
+                        if(!records.isEmpty())progress.committed(groupId,records.getLast().record().sourceOffset());
                         for (var record : records) committer.markProcessed(record);
                         committer.markBatchFinished();
                     } catch (Exception e) {
@@ -148,7 +160,7 @@ public class TaskRuntimeCoordinator {
         Thread.startVirtualThread(() -> {
             try { engine.run(); }
             catch (Exception e) { if (configs.mapping(table.mappingId()).enabled()) fail(task, table, e); }
-            finally { workers.remove(table.mappingId(), worker); groupWorkers.remove(groupId, table.mappingId()); }
+            finally { converter.close();workers.remove(table.mappingId(), worker); groupWorkers.remove(groupId, table.mappingId()); }
         });
     }
 
@@ -203,9 +215,8 @@ public class TaskRuntimeCoordinator {
     }
 
     private CapturedRecord captureRecord(SyncTask task, SyncTaskTable table,
-                                         io.debezium.engine.ChangeEvent<String, String> record) throws Exception {
-        if (record.value() == null) return null;
-        JsonNode root = json.readTree(record.value());
+                                         byte[] value) throws Exception {
+        JsonNode root = json.readTree(value);
         JsonNode payload = root.has("payload") ? root.path("payload") : root;
         String op = payload.path("op").asText("");
         if (op.isBlank()) {
@@ -224,8 +235,9 @@ public class TaskRuntimeCoordinator {
         String position = sourcePosition(payload);
         var eventId = UUID.nameUUIDFromBytes((table.mappingId() + "|" + position + "|" + operation.name())
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        var event = new ChangeEvent(eventId, table.mappingId(), operation, before, after, Instant.now());
         long sourceTimestamp = payload.path("source").path("ts_ms").asLong(0);
+        var event = new ChangeEvent(eventId, table.mappingId(), operation, before, after, Instant.now(),
+                sourceTimestamp > 0 ? Instant.ofEpochMilli(sourceTimestamp) : null);
         if (sourceTimestamp > 0) tasks.updateSourceLag(table.mappingId(), System.currentTimeMillis() - sourceTimestamp);
         if (operation == Operation.READ && !"last".equalsIgnoreCase(payload.path("source").path("snapshot").asText()))
             tasks.updateTableStatus(table.id(), TableStatus.SNAPSHOTTING, null);
@@ -286,6 +298,6 @@ public class TaskRuntimeCoordinator {
     private Path historyPath(long mappingId) { return directory.resolve("history-" + mappingId + ".dat"); }
     private String rootMessage(Throwable error) { var t=error; while(t.getCause()!=null)t=t.getCause(); return Objects.toString(t.getMessage(), t.getClass().getSimpleName()); }
     @PreDestroy void shutdown() { new ArrayList<>(workers.keySet()).forEach(this::close); }
-    private record Worker(DebeziumEngine<io.debezium.engine.ChangeEvent<String, String>> engine) {}
+    private record Worker(DebeziumEngine<RecordChangeEvent<SourceRecord>> engine) {}
     private record CapturedRecord(ChangeEvent event, String position) {}
 }

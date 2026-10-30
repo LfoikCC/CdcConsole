@@ -8,10 +8,13 @@ import java.util.UUID;
 
 public record ChangeEvent(UUID id, @NotNull Long mappingId, @NotNull Operation operation,
                           @NotNull Map<String, Object> before, @NotNull Map<String, Object> after,
-                          Instant capturedAt) {
+                          Instant capturedAt, Instant sourceEventAt) {
+    public ChangeEvent(UUID id, Long mappingId, Operation operation, Map<String,Object> before, Map<String,Object> after, Instant capturedAt) {
+        this(id,mappingId,operation,before,after,capturedAt,null);
+    }
     public ChangeEvent normalized() {
         return new ChangeEvent(id == null ? UUID.randomUUID() : id, mappingId, operation,
                 before == null ? Map.of() : before, after == null ? Map.of() : after,
-                capturedAt == null ? Instant.now() : capturedAt);
+                capturedAt == null ? Instant.now() : capturedAt,sourceEventAt);
     }
 }

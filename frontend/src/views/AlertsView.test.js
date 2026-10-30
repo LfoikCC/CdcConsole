@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia } from 'pinia'
+import { permit,identity } from '../auth'
 import AlertsView from './AlertsView.vue'
 import { api } from '../api'
 import { CdcTable, CdcTableColumn, CdcButton, CdcTag } from '../components/ui'
@@ -13,8 +14,8 @@ const rows = [
   { id:2, taskId:1, status:'ACKNOWLEDGED', title:'已确认事件' },
   { id:3, taskId:1, status:'RESOLVED', title:'已解决事件' }
 ]
-function render() { return mount(AlertsView, { global: { plugins:[createPinia()], components:{CdcTable,CdcTableColumn,CdcButton,CdcTag}, stubs:{RouterLink:true}, directives:{loading:()=>{}} } }) }
-beforeEach(() => { api.mockReset(); api.mockImplementation(async path => path === '/alerts' ? structuredClone(rows) : []) })
+function render() { return mount(AlertsView, { global: { plugins:[createPinia()], components:{CdcTable,CdcTableColumn,CdcButton,CdcTag}, stubs:{RouterLink:true}, directives:{loading:()=>{},permit} } }) }
+beforeEach(() => { identity.user={role:'ADMIN'}; api.mockReset(); api.mockImplementation(async path => path === '/alerts' ? structuredClone(rows) : []) })
 describe('alert summary filters', () => {
   it('defaults to all and keeps global counts while switching filters locally', async () => {
     const wrapper=render(); await flushPromises()

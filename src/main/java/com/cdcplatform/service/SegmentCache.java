@@ -47,6 +47,11 @@ public class SegmentCache {
 
     public StagedBatch appendBatch(long mappingId, long generation, String sourceStart, String sourceEnd,
                                    List<ChangeEvent> input) {
+        return appendBatch(mappingId, generation, sourceStart, sourceEnd, input, null);
+    }
+
+    public StagedBatch appendBatch(long mappingId, long generation, String sourceStart, String sourceEnd,
+                                   List<ChangeEvent> input, Long captureGeneration) {
         if (input == null || input.isEmpty()) throw new IllegalArgumentException("delivery batch is empty");
         var events = input.stream().map(ChangeEvent::normalized).toList();
         try {
@@ -68,7 +73,11 @@ public class SegmentCache {
             if (!Files.exists(ready)) {
                 Path temp = directory.resolve(batchId + ".tmp");
                 var header = new LinkedHashMap<String, Object>();
-                header.put("type", "CDC_BATCH"); header.put("version", 1); header.put("batchId", batchId);
+                header.put("type", "CDC_BATCH"); header.put("version", 2); header.put("batchId", batchId);
+                header.put("capturedFrom",events.stream().map(ChangeEvent::capturedAt).min(Instant::compareTo).orElse(null));
+                header.put("capturedTo",events.stream().map(ChangeEvent::capturedAt).max(Instant::compareTo).orElse(null));
+                header.put("sourceEventAt",events.stream().map(ChangeEvent::sourceEventAt).filter(java.util.Objects::nonNull).max(Instant::compareTo).orElse(null));
+                header.put("captureGeneration", captureGeneration);
                 header.put("mappingId", mappingId); header.put("generation", generation);
                 header.put("sourceStart", sourceStart); header.put("sourceEnd", sourceEnd);
                 header.put("eventCount", events.size()); header.put("checksum", checksum);
@@ -117,7 +126,9 @@ public class SegmentCache {
         if (!Files.exists(batches)) return List.of();
         try (var files = Files.walk(batches)) {
             var result = new ArrayList<BatchDescriptor>();
-            for (Path path : files.filter(p -> p.getFileName().toString().endsWith(".ready")).toList()) {
+            for (Path path : files.filter(p -> p.getFileName().toString().endsWith(".ready")).sorted(Comparator.comparingLong((Path p) -> {
+                try { return Files.getLastModifiedTime(p).toMillis(); } catch (IOException e) { throw new IllegalStateException(e); }
+            }).thenComparing(Path::toString)).toList()) {
                 try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
                     String first = reader.readLine();
                     Map<String, Object> header = json.readValue(first, new TypeReference<>() {});
@@ -126,7 +137,7 @@ public class SegmentCache {
                             Long.parseLong(String.valueOf(header.getOrDefault("generation", 0))),
                             value(header.get("sourceStart")), value(header.get("sourceEnd")),
                             String.valueOf(header.get("checksum")),
-                            Integer.parseInt(String.valueOf(header.get("eventCount"))), path, Files.size(path)));
+                            Integer.parseInt(String.valueOf(header.get("eventCount"))), path, Files.size(path), header.get("captureGeneration") instanceof Number n ? n.longValue() : null));
                 }
             }
             return result;
@@ -170,5 +181,5 @@ public class SegmentCache {
     public record StagedBatch(String batchId, Path path, String checksum, int eventCount,
                               long payloadBytes, List<ChangeEvent> events) {}
     public record BatchDescriptor(String batchId, long mappingId, long generation, String sourceStart,
-                                  String sourceEnd, String checksum, int eventCount, Path path, long payloadBytes) {}
+                                  String sourceEnd, String checksum, int eventCount, Path path, long payloadBytes, Long captureGeneration) {}
 }

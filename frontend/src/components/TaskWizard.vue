@@ -1,4 +1,5 @@
 <script setup>
+import DatabaseBrand from './DatabaseBrand.vue'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { CdcMessage, CdcMessageBox } from './ui/feedback'
 import { CheckCircle2, Database, Link2, SlidersHorizontal } from 'lucide-vue-next'
@@ -192,10 +193,10 @@ function targetLabel(row){return [row.targetSchema,row.targetTable].filter(Boole
         <cdc-alert v-if="props.subscription" class="subscription-note" type="info" :closable="false" show-icon title="此任务将订阅现有源采集组" description="源表的增量变更只采集一次；新目标拥有独立投递进度、重试和暂停状态。若未保留可复用快照批次，请先完成该目标的基线初始化后再启用订阅。"/>
         <cdc-form label-position="top">
           <div class="two-cols">
-            <cdc-form-item label="源连接" required><cdc-select v-model="form.sourceId" filterable placeholder="选择源连接" style="width:100%" @change="connectionChanged('source')"><cdc-option v-for="x in store.sources.filter(x=>x.enabled)" :key="x.id" :label="x.name+' · '+x.dbType" :value="x.id"/></cdc-select></cdc-form-item>
-            <cdc-form-item label="目标连接" required><cdc-select v-model="form.targetId" filterable placeholder="选择目标连接" style="width:100%" @change="connectionChanged('target')"><cdc-option v-for="x in store.targets.filter(x=>x.enabled)" :key="x.id" :label="x.name+' · '+x.targetType" :value="x.id"/></cdc-select></cdc-form-item>
+            <cdc-form-item label="源连接" required><cdc-select v-model="form.sourceId" filterable placeholder="选择源连接" style="width:100%" @change="connectionChanged('source')"><cdc-option v-for="x in store.sources.filter(x=>x.enabled)" :key="x.id" :label="x.name" :brand="x.dbType" :value="x.id"><DatabaseBrand :type="x.dbType" :label="x.name"/></cdc-option></cdc-select></cdc-form-item>
+            <cdc-form-item label="目标连接" required><cdc-select v-model="form.targetId" filterable placeholder="选择目标连接" style="width:100%" @change="connectionChanged('target')"><cdc-option v-for="x in store.targets.filter(x=>x.enabled)" :key="x.id" :label="x.name" :brand="x.targetType" :value="x.id"><DatabaseBrand :type="x.targetType" :label="x.name"/></cdc-option></cdc-select></cdc-form-item>
           </div>
-          <cdc-form-item v-if="!form.id" label="附加目标订阅"><cdc-select v-model="form.additionalTargetIds" multiple collapse-tags filterable placeholder="可同时选择多个目标连接" style="width:100%"><cdc-option v-for="x in store.targets.filter(x=>x.enabled&&x.id!==form.targetId)" :key="x.id" :label="x.name+' · '+x.targetType" :value="x.id"/></cdc-select><div class="form-help">附加目标默认复用主目标映射；如需独立映射，请在任务详情的目标订阅中配置。</div></cdc-form-item>
+          <cdc-form-item v-if="!form.id" label="附加目标订阅"><cdc-select v-model="form.additionalTargetIds" multiple collapse-tags filterable placeholder="可同时选择多个目标连接" style="width:100%"><cdc-option v-for="x in store.targets.filter(x=>x.enabled&&x.id!==form.targetId)" :key="x.id" :label="x.name" :brand="x.targetType" :value="x.id"><DatabaseBrand :type="x.targetType" :label="x.name"/></cdc-option></cdc-select><div class="form-help">附加目标默认复用主目标映射；如需独立映射，请在任务详情的目标订阅中配置。</div></cdc-form-item>
           <cdc-form-item label="同步模式"><div class="mode-control"><cdc-radio-group v-model="form.syncMode" class="sync-mode-group"><cdc-radio-button value="FULL_INCREMENTAL">全量 + 增量</cdc-radio-button><cdc-radio-button value="INCREMENTAL_ONLY">仅增量</cdc-radio-button></cdc-radio-group><div class="form-help">{{form.syncMode==='FULL_INCREMENTAL'?'首次启动先 Upsert 当前数据，再从一致位点消费变化':'首次启动从当前日志位点开始，不写入历史数据'}}</div></div></cdc-form-item>
           <div v-if="source?.dbType==='STARROCKS'" class="warning-callout">StarRocks 作为源端使用主键快照轮询，无法提供 MySQL/SQL Server 等级的严格一致性。</div>
         </cdc-form>
@@ -269,8 +270,5 @@ function targetLabel(row){return [row.targetSchema,row.targetTable].filter(Boole
   </section>
   <FieldMappingDialog v-if="mappingIndex>=0" v-model="mappingOpen" :title="sourceLabel(form.tables[mappingIndex]||{})+' 字段映射'" :source-columns="form.tables[mappingIndex]?.sourceColumns||[]" :target-columns="form.tables[mappingIndex]?.targetColumns||[]" :mapping="form.tables[mappingIndex]?.columns||{}" @apply="applyMapping"/>
 </template>
-
-
-
 
 

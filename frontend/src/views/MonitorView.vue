@@ -1,11 +1,15 @@
 <script setup>
+import DatabaseBrand from '../components/DatabaseBrand.vue'
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { Activity, Zap, Clock, BarChart3, RefreshCw, AlertTriangle } from 'lucide-vue-next'
 import { api } from '../api'
 import { useAppStore } from '../stores/app'
+import { levelMeta, badgeClass } from '../statusMeta'
 const store=useAppStore(), range=ref('1h'), live=ref(true), onlyRunning=ref(false), page=ref(1)
 const data=ref(null), error=ref(''), loading=ref(false)
 const summary=computed(()=>data.value?.summary||{}), items=computed(()=>data.value?.items||[])
+const sourceType=task=>store.sources.find(s=>s.name===task.source)?.dbType
+const targetType=task=>store.targets.find(t=>t.name===task.target)?.targetType
 const labels={DRAFT:'草稿',STARTING:'启动中',SNAPSHOTTING:'全量同步',RUNNING:'运行中',DEGRADED:'部分异常',FAILED:'失败',PAUSED:'已暂停',STOPPED:'已停止'}
 const number=value=>value==null?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:1})
 const date=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—'
@@ -56,14 +60,14 @@ onBeforeUnmount(()=>{disposed=true;clearInterval(timer);cancelAutomatic();window
       </div>
       <div class="mon-section-head"><h2>任务实时状态</h2><label class="inline-check"><input type="checkbox" v-model="onlyRunning" @change="filter">仅显示运行中</label></div>
       <div class="mon-grid"><RouterLink v-for="task in items" :key="task.id" :to="`/tasks/${task.id}`" class="mon-card" :class="{alert:task.status==='FAILED',warn:task.status==='DEGRADED'}">
-        <div class="mon-card-head"><div><strong>{{task.name}}</strong><p>{{task.source}} → {{task.target}}</p></div><span class="status-badge" :class="`status-${task.status.toLowerCase()}`"><i/>{{labels[task.status]||task.status}}</span></div>
+        <div class="mon-card-head"><div><strong>{{task.name}}</strong><p><DatabaseBrand :type="sourceType(task)" :label="task.source"/> → <DatabaseBrand :type="targetType(task)" :label="task.target"/></p></div><span class="status-badge" :class="`status-${task.status.toLowerCase()}`"><i/>{{labels[task.status]||task.status}}</span></div>
         <div class="mon-card-body"><div><span>投递吞吐</span><strong>{{number(task.writeRate)}}<small v-if="task.writeRate!=null">r/s</small></strong></div><div><span>延迟</span><strong :class="{'warning-text':task.lagMs>task.alertLagSeconds*1000}">{{delay(task.lagMs)}}</strong></div><div><span>1h 处理</span><strong>{{number(task.hourRows)}}</strong></div></div>
         <div class="mon-chart" :class="task.status==='FAILED'?'danger-text':task.status==='DEGRADED'?'warning-text':task.status==='SNAPSHOTTING'?'info-text':'success-text'"><svg v-if="task.trend.length" viewBox="0 0 300 44" preserveAspectRatio="none" role="img" :aria-label="`${task.name} ${range} 投递吞吐趋势`"><polyline :points="points(task.trend)" fill="none" stroke="currentColor" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg><span v-else class="muted">暂无趋势采样</span></div>
         <div class="mon-card-foot"><span v-if="task.lastError" class="danger-text" :title="task.lastError">{{task.lastError}}</span><span v-else-if="!isCollecting(task)" class="muted">未运行 · 已停止采样</span><span v-else-if="task.stale" class="muted">{{task.sampledAt?'采样已过期':'暂无采样'}}</span><span v-else>最近事件 {{date(task.lastEventAt)}}</span><span class="mono muted" :title="date(task.sampledAt)">采样 {{task.sampledAt?new Date(task.sampledAt).toLocaleTimeString('zh-CN',{hour12:false}):'—'}}</span></div>
       </RouterLink></div>
       <div v-if="!items.length" class="empty-state">{{summary.total?'当前筛选下没有任务':'尚未创建同步任务'}}</div>
       <div v-if="data.total" class="table-footer"><span class="muted">共 {{data.total}} 个任务 · 任务汇总，目标明细请进入任务详情</span><div class="pager"><button class="icon-btn" :disabled="page<=1" aria-label="上一页" @click="turnPage(page-1)">‹</button><span>{{page}}</span><button class="icon-btn" :disabled="page*20>=data.total" aria-label="下一页" @click="turnPage(page+1)">›</button></div></div>
-      <section class="mon-events"><header><h2>实时事件流</h2><span class="live-chip" :class="{paused:!live||!store.connected}"><i/>{{!live?'PAUSED':store.connected?'LIVE':'连接中断'}}</span><span class="muted">最近 {{data.events.length}} 条</span></header><div class="mon-events-body"><div v-for="event in data.events" :key="event.id" class="mon-event-row"><time class="mono muted">{{date(event.createdAt)}}</time><span :class="event.level==='ERROR'?'danger-text':event.level==='WARN'?'warning-text':'info-text'">{{event.level}}</span><RouterLink :to="`/tasks/${event.taskId}`">{{event.taskName}}</RouterLink><span :class="{'danger-text':event.level==='ERROR','warning-text':event.level==='WARN'}">{{event.message}}</span></div><div v-if="!data.events.length" class="empty-state">暂无任务事件</div></div></section>
+      <section class="mon-events"><header><h2>实时事件流</h2><span class="live-chip" :class="{paused:!live||!store.connected}"><i/>{{!live?'PAUSED':store.connected?'LIVE':'连接中断'}}</span><span class="muted">最近 {{data.events.length}} 条</span></header><div class="mon-events-body"><div v-for="event in data.events" :key="event.id" class="mon-event-row"><time class="mono muted">{{date(event.createdAt)}}</time><span :class="badgeClass(levelMeta(event.level).tone)"><i class="dot"/>{{levelMeta(event.level).label}}</span><RouterLink :to="`/tasks/${event.taskId}`">{{event.taskName}}</RouterLink><span :class="{'danger-text':event.level==='ERROR','warning-text':event.level==='WARN'}">{{event.message}}</span></div><div v-if="!data.events.length" class="empty-state">暂无任务事件</div></div></section>
       <p class="monitor-updated muted">最近更新 {{date(data.updatedAt)}} · 指标每 {{number(data.sampleMs/1000)}} 秒采样</p>
     </template>
   </section>

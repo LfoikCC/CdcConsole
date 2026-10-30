@@ -1,10 +1,10 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   plugins: [vue()],
-  base: './',
-  build: { outDir: mode === 'dbx' ? '../dist/dbx-ui' : '../target/generated-resources/static', emptyOutDir: true },
+  base: '/',
+  build: { outDir: '../target/generated-resources/static', emptyOutDir: true },
   server: { port: 5173, proxy: { '/api': 'http://127.0.0.1:8080' } },
   test: { environment: 'jsdom' }
-}))
+})

@@ -1,5 +1,7 @@
-import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
-import { dbxHost } from './hostAdapter'
+import { createRouter, createWebHistory } from 'vue-router'
+import { checkIdentity, can } from './auth'
+import LoginView from './views/LoginView.vue'
+import AuditView from './views/AuditView.vue'
 import TasksView from './views/TasksView.vue'
 import MonitorView from './views/MonitorView.vue'
 import TaskDetailView from './views/TaskDetailView.vue'
@@ -8,18 +10,36 @@ import AlertsView from './views/AlertsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import TaskWizardPage from './views/TaskWizardPage.vue'
 
-export default createRouter({
-  history: dbxHost.isDbx() ? createWebHashHistory() : createWebHistory(),
+const router = createRouter({
+  history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/tasks' },
-    { path: '/tasks', component: TasksView },
-    { path: '/monitor', component: MonitorView },
-    { path: '/tasks/new', component: TaskWizardPage },
-    { path: '/tasks/:id/edit', component: TaskWizardPage },
-    { path: '/tasks/:id', component: TaskDetailView },
+    { path: '/login', component: LoginView },
+    { path: '/audit', component: AuditView, meta: { title: '审计日志' } },
+    { path: '/tasks', component: TasksView, meta: { title: '同步任务' } },
+    { path: '/monitor', component: MonitorView, meta: { title: '任务监控' } },
+    { path: '/tasks/new', component: TaskWizardPage, meta: { title: '新建同步任务', requiresAdmin: true } },
+    { path: '/tasks/:id/edit', component: TaskWizardPage, meta: { title: '编辑同步任务', requiresAdmin: true } },
+    { path: '/tasks/:id', component: TaskDetailView, meta: { title: '任务详情' } },
     { path: '/connections', redirect: '/connections/sources' },
-    { path: '/connections/:kind(sources|targets)', component: ConnectionsView },
-    { path: '/alerts', component: AlertsView },
-    { path: '/settings', component: SettingsView }
+    { path: '/connections/:kind(sources|targets)', component: ConnectionsView, meta: { title: '数据连接' } },
+    { path: '/alerts', component: AlertsView, meta: { title: '告警中心' } },
+    { path: '/settings', component: SettingsView, meta: { title: '系统设置', requiresAdmin: true } },
+
+    // 数据开发：`new` 必须排在 `:id` 之前，否则会被当成 id 解析
+    { path: '/dev', redirect: '/dev/flows' },
+    { path: '/dev/flows', component: () => import('./views/dev/FlowsView.vue'), meta: { title: '数据流' } },
+    { path: '/dev/flows/new', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '新建数据流', requiresAdmin: true } },
+    { path: '/dev/flows/:id/edit', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '编辑数据流', requiresAdmin: true } },
+    { path: '/dev/flows/:id', component: () => import('./views/dev/FlowDetailView.vue'), meta: { title: '数据流详情' } },
+    { path: '/dev/flows/:id/runs/:runId', component: () => import('./views/dev/FlowRunView.vue'), meta: { title: '运行详情' } }
   ]
 })
+router.beforeEach(async to => {
+  const user = await checkIdentity()
+  if (!user && to.path !== '/login') return { path:'/login', query:{redirect:to.fullPath} }
+  if (user && to.path === '/login') return '/tasks'
+  // 用 meta 判断，而不是 endsWith('/edit')：后者会把 /dev/flows/5/edit 误判成同步任务的编辑页
+  if (user && !can('admin') && to.meta.requiresAdmin) return '/tasks'
+})
+export default router

@@ -37,13 +37,15 @@ public class TaskSubscriptionService {
     private final SegmentCache cache;
     private final RuntimeEventService events;
     private final ObjectMapper json;
+    private final RecoveryService recoveries;
     private final Set<Long> activeInitializations = ConcurrentHashMap.newKeySet();
 
     public TaskSubscriptionService(TaskRepository tasks, TaskSubscriptionRepository subscriptions, ConfigRepository configs,
                                    CaptureGroupService captureGroups, ConnectionProbeService connections,
-                                   DeliveryService delivery, SegmentCache cache, ObjectMapper json, RuntimeEventService events) {
+                                   DeliveryService delivery, SegmentCache cache, ObjectMapper json, RuntimeEventService events, RecoveryService recoveries) {
         this.tasks=tasks; this.subscriptions=subscriptions; this.configs=configs; this.captureGroups=captureGroups;
         this.connections=connections; this.delivery=delivery; this.cache=cache; this.json=json; this.events=events;
+        this.recoveries=recoveries;
     }
 
     @PostConstruct
@@ -80,7 +82,7 @@ public class TaskSubscriptionService {
             if(item!=null){row.put("sourceColumns",item.getOrDefault("columns",List.of()));row.put("sourceColumnDetails",item.getOrDefault("columnDetails",List.of()));}
             return row;
         }).toList();
-        return Map.of("task",task,"source",source,"tables",rows,"targets",configs.targets());
+        return Map.of("task",task,"source",configs.source(task.sourceId(),false),"tables",rows,"targets",configs.targets());
     }
 
     public Map<String,Object> reconciliationOptions(long taskId, long subscriptionId) {
@@ -126,14 +128,28 @@ public class TaskSubscriptionService {
             if(requested.put(bindingId,row)!=null) throw new IllegalArgumentException("同一订阅表不能重复提交");
         }
         if(requested.size()!=subscription.tables().size()) throw new IllegalArgumentException("必须提交目标订阅下全部表的投递映射");
+        var validated=new HashMap<Long,TableMapping>();
         for(var binding:subscription.tables()) {
             var row=requested.get(binding.id());
+            recoveries.lockBinding(binding.id());
+            if(recoveries.busy(binding.mappingId())) throw new IllegalStateException("该目标表有未完成的恢复作业，不能修改投递映射");
             if(row==null) throw new IllegalArgumentException("缺少订阅表投递映射");
             var source=task.tables().stream().filter(table -> table.id()==binding.sourceTaskTableId()).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("订阅源表不存在"));
             var next=targetMapping(task,source,subscription.targetId(),row);
             validateTargetMapping(source,next);
+            validated.put(binding.id(),next);
+        }
+        for(var binding:subscription.tables()) {
+            var next=validated.get(binding.id());
             long mappingId=binding.mappingId();
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCompletion(int status) {
+                            if(status!=STATUS_COMMITTED) delivery.resume(mappingId);
+                        }
+                    });
+            delivery.suspendAndAwait(mappingId);
             delivery.cancel(mappingId);
             var persisted=new TableMapping(mappingId,next.sourceId(),next.targetId(),next.sourceDatabase(),next.sourceSchema(),next.sourceTable(),
                     next.targetSchema(),next.targetTable(),next.columns(),next.includeOperation(),next.includeCapturedAt(),next.operationColumn(),
@@ -188,6 +204,12 @@ public class TaskSubscriptionService {
     }
 
     public void initialize(long subscriptionId) {
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()){
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){@Override public void afterCommit(){startInitialization(subscriptionId);}});return;
+        }
+        startInitialization(subscriptionId);
+    }
+    private void startInitialization(long subscriptionId){
         if(!activeInitializations.add(subscriptionId)) return;
         Thread.startVirtualThread(() -> {
             try { runInitialization(subscriptionId); } finally { activeInitializations.remove(subscriptionId); }
@@ -201,11 +223,24 @@ public class TaskSubscriptionService {
     public void action(long taskId,long subscriptionId,String action) {
         var subscription=get(taskId,subscriptionId);
         switch(action.toLowerCase(Locale.ROOT)) {
-            case "pause" -> updateSubscriptionState(subscriptionId,"PAUSED",null,false);
+            case "pause" -> {
+                for(var table:subscription.tables()){recoveries.pauseTable(taskId,table);updateTableState(subscriptionId,table,"PAUSED",null,false);}
+                updateSubscriptionState(subscriptionId,"PAUSED",null,false);
+            }
             case "resume","retry-initialization" -> {
+                if("CANCELLED".equals(subscription.status())&&!isActive(tasks.task(taskId).status()))
+                    throw new IllegalStateException("请先启动或恢复任务，再重新启用目标订阅");
+                if("CANCELLED".equals(subscription.status())||"retry-initialization".equals(action.toLowerCase(Locale.ROOT)))
+                    for(var table:subscription.tables())recoveries.prepareFullInitialization(taskId,table);
                 updateSubscriptionState(subscriptionId,"INITIALIZING_SNAPSHOT",null,false); initialize(subscriptionId);
             }
             case "cancel" -> {
+                if(subscription.tables().stream().anyMatch(t->recoveries.busy(t.mappingId())))throw new IllegalStateException("请先停止任务以取消未完成恢复作业");
+                subscription.tables().forEach(table->delivery.suspendAndAwait(table.mappingId()));
+                subscription.tables().forEach(table->{
+                    subscriptions.updateTableState(table.id(),"CANCELLED",null,false);
+                    subscriptions.updateRuntimeStatus(table.runtimeTaskTableId(),TableStatus.STOPPED);
+                });
                 updateSubscriptionState(subscriptionId,"CANCELLED",null,false);
                 subscription.tables().forEach(table -> captureGroups.setMappingSubscriptionStatus(table.mappingId(),"CANCELLED",null));
             }
@@ -234,77 +269,21 @@ public class TaskSubscriptionService {
             tasks.addLog(task.id(),null,"INFO","目标订阅初始化完成："+subscription.name());
         } catch(Exception e) {
             String error=root(e);
+            if(!isActive(tasks.task(task.id()).status())||"PAUSED".equals(subscriptions.subscription(subscriptionId).status()))return;
             updateSubscriptionState(subscriptionId,"FAILED",error,false);
             tasks.addLog(task.id(),null,"ERROR","目标订阅初始化失败："+subscription.name()+"："+error);
         }
     }
 
     private void initializeTable(SyncTask task, TaskTargetSubscription subscription, TaskTargetSubscriptionTable binding) throws Exception {
-        var runtime=binding.mapping();
-        var source=configs.source(task.sourceId(),true);
-        OffsetDateTime barrier=OffsetDateTime.now();
         updateTableState(subscription.id(),binding,"INITIALIZING_SNAPSHOT",null,false);
         captureGroups.setMappingSubscriptionStatus(binding.mappingId(),"INITIALIZING_SNAPSHOT",null);
-        // Live fan-out stays disabled while snapshot and catch-up batches are delivered.
-        // Mapping edits cancel the old writer and leave delivery suspended.
-        delivery.resume(binding.mappingId());
-        scanSnapshot(source,runtime);
+        recoveries.initializeAndAwait(task.id(),binding);
         updateTableState(subscription.id(),binding,"CATCHING_UP",null,false);
         updateSubscriptionState(subscription.id(),"CATCHING_UP",null,false);
-        // Replay all shared source batches created since the snapshot boundary.
-        // Re-reading immutable ready files avoids a second CDC consumer.
-        for(int pass=0; pass<3; pass++) {
-            int replayed=replaySince(binding.captureGroupId(),runtime.sourceTable(),runtime.mappingId(),barrier);
-            if(replayed==0) break;
-        }
         captureGroups.setMappingSubscriptionStatus(binding.mappingId(),"ACTIVE",null);
         subscriptions.updateRuntimeStatus(binding.runtimeTaskTableId(),TableStatus.RUNNING);
         updateTableState(subscription.id(),binding,"ACTIVE",null,true);
-    }
-
-    private void scanSnapshot(SourceConfig source, SyncTaskTable table) throws Exception {
-        List<String> columns=new ArrayList<>(table.columns().keySet());
-        for(String key:table.keyColumns()) if(!columns.contains(key)) columns.add(key);
-        if(columns.isEmpty()) throw new IllegalArgumentException("目标订阅没有可读取的源字段");
-        String sql="SELECT "+String.join(",",columns.stream().map(column -> quote(source.dbType(),column)).toList())+" FROM "+qualified(source.dbType(),table.sourceSchema(),table.sourceTable());
-        try(var connection=DriverManager.getConnection(connections.streamingUrl(source,table.sourceDatabase()),source.username(),source.password())) {
-            connection.setReadOnly(true); connection.setAutoCommit(false);
-            try(var statement=connection.prepareStatement(sql)) {
-                statement.setFetchSize(1000); statement.setQueryTimeout(600);
-                try(var rs=statement.executeQuery()) {
-                    var events=new ArrayList<ChangeEvent>(1000); long row=0;
-                    while(rs.next()) {
-                        var after=new LinkedHashMap<String,Object>();
-                        for(String column:columns) after.put(column,rs.getObject(column));
-                        var eventId=UUID.nameUUIDFromBytes((table.mappingId()+"|snapshot|"+(++row)).getBytes(StandardCharsets.UTF_8));
-                        events.add(new ChangeEvent(eventId,table.mappingId(),Operation.READ,Map.of(),after,java.time.Instant.now()));
-                        if(events.size()==1000) { stageSnapshot(events); events.clear(); }
-                    }
-                    if(!events.isEmpty()) stageSnapshot(events);
-                }
-            } finally { try { connection.rollback(); } catch(Exception ignored) { } }
-        }
-    }
-
-    private int replaySince(Long groupId, String sourceTable, long targetMappingId, OffsetDateTime after) {
-        if(groupId==null) return 0; int count=0;
-        for(var batch:captureGroups.captureBatches(groupId)) {
-            if(batch.createdAt().isBefore(after)) continue;
-            try {
-                var events=cache.readBatch(Path.of(batch.segmentPath()),batch.checksum());
-                if(events.isEmpty() || events.getFirst().mappingId()==targetMappingId) continue;
-                var replay=events.stream().map(event -> new ChangeEvent(
-                        UUID.nameUUIDFromBytes((targetMappingId+"|replay|"+event.id()).getBytes(StandardCharsets.UTF_8)),targetMappingId,
-                        event.operation(),event.before(),event.after(),event.capturedAt())).toList();
-                stageSnapshot(replay); count++;
-            } catch(Exception e) { throw new IllegalStateException("无法回放共享采集批次："+root(e),e); }
-        }
-        return count;
-    }
-
-    private void stageSnapshot(List<ChangeEvent> events) {
-        var outcome=delivery.stageAndAwait(events,"SUBSCRIPTION_SNAPSHOT","SUBSCRIPTION_SNAPSHOT",0,Duration.ofMinutes(10));
-        if(!outcome.delivered()) throw new IllegalStateException(outcome.error());
     }
 
     private TableMapping targetMapping(SyncTask task, SyncTaskTable source, long targetId, Map<String,Object> row) {

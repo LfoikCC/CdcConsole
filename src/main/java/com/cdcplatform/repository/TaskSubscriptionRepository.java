@@ -113,7 +113,7 @@ public class TaskSubscriptionRepository {
     }
 
     public void restartTable(long tableId) {
-        jdbc.sql("UPDATE target_subscription_table SET status='INITIALIZING_SNAPSHOT',initialization_error=NULL," +
+        jdbc.sql("UPDATE target_subscription_table SET mapping_version=mapping_version+1,status='INITIALIZING_SNAPSHOT',initialization_error=NULL," +
                         "initialization_started_at=CURRENT_TIMESTAMP,initialization_completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=:id")
                 .param("id",tableId).update();
     }
@@ -129,7 +129,8 @@ public class TaskSubscriptionRepository {
                         "r.snapshot_profile,r.incremental_profile,r.structure_fingerprint,r.reconciliation_json,r.status AS runtime_status,r.processed_rows,r.error_count,r.last_latency_ms,r.last_event_at,r.last_error " +
                         "FROM target_subscription_table t JOIN sync_task_table r ON r.id=t.runtime_task_table_id WHERE t.subscription_id=:subscription ORDER BY t.id")
                 .param("subscription", subscription.id()).query((rs, row) -> {
-                    String subscriptionStatus=rs.getString("status");
+                    String subscriptionStatus=Set.of("CANCELLED","PAUSED","FAILED").contains(subscription.status())
+                            ?subscription.status():rs.getString("status");
                     SyncTaskTable mapping = new SyncTaskTable(rs.getLong("runtime_task_table_id"), rs.getLong("mapping_id"),
                             rs.getString("source_database"),rs.getString("source_schema"),rs.getString("source_table"),
                             rs.getString("target_schema"),rs.getString("target_table"),readMap(rs.getString("columns_json")),readList(rs.getString("key_columns_json")),
@@ -141,14 +142,22 @@ public class TaskSubscriptionRepository {
                             displayStatus(subscriptionStatus,rs.getString("runtime_status")),rs.getLong("processed_rows"),rs.getLong("error_count"),
                             nullableLong(rs,"last_latency_ms"),rs.getObject("last_event_at",OffsetDateTime.class),rs.getString("last_error"));
                     long group=rs.getLong("capture_group_id");
+                    boolean missingGroup=rs.wasNull();
                     return new TaskTargetSubscriptionTable(rs.getLong("id"),rs.getLong("subscription_id"),rs.getLong("source_task_table_id"),
-                            rs.getLong("runtime_task_table_id"),rs.wasNull()?null:group,rs.getLong("mapping_id"),rs.getString("status"),
+                            rs.getLong("runtime_task_table_id"),missingGroup?null:group,rs.getLong("mapping_id"),subscriptionStatus,
                             rs.getString("initialization_error"),rs.getObject("initialization_started_at",OffsetDateTime.class),
                             rs.getObject("initialization_completed_at",OffsetDateTime.class),mapping);
                 }).list();
-        long events=tables.stream().mapToLong(t -> Math.max(0,t.mapping().processedRows())).sum();
+        // Union by immutable file so public and delivery metadata never double-count a file.
+        var pending=jdbc.sql("SELECT COALESCE(SUM(event_count),0) AS events,COALESCE(SUM(payload_bytes),0) AS bytes FROM ("+
+                "SELECT mapping_id,segment_path,MAX(event_count) AS event_count,MAX(payload_bytes) AS payload_bytes FROM ("+
+                "SELECT d.mapping_id,d.segment_path,d.event_count,d.payload_bytes FROM cdc_delivery_batch d JOIN target_subscription_table t ON t.mapping_id=d.mapping_id WHERE t.subscription_id=:id AND d.status NOT IN ('SUCCEEDED','CANCELLED') "+
+                "UNION ALL SELECT s.mapping_id,c.segment_path,c.event_count,c.payload_bytes FROM cdc_subscription_batch b JOIN cdc_target_subscription s ON s.id=b.subscription_id JOIN cdc_capture_batch c ON c.capture_batch_id=b.capture_batch_id JOIN target_subscription_table t ON t.mapping_id=s.mapping_id WHERE t.subscription_id=:id AND b.status NOT IN ('SUCCEEDED','CANCELLED') "+
+                "UNION ALL SELECT j.mapping_id,s.segment_path,s.event_count,s.payload_bytes FROM recovery_snapshot s JOIN recovery_job j ON j.id=s.job_id JOIN target_subscription_table t ON t.id=j.subscription_table_id WHERE t.subscription_id=:id AND j.status NOT IN ('SUCCEEDED','CANCELLED') AND NOT EXISTS(SELECT 1 FROM cdc_delivery_batch d WHERE d.recovery_id=j.id AND d.segment_path=s.segment_path AND d.status='SUCCEEDED')"+
+                ") p GROUP BY mapping_id,segment_path) files").param("id",subscription.id()).query().singleRow();
+        long events=((Number)pending.get("EVENTS")).longValue(),bytes=((Number)pending.get("BYTES")).longValue();
         return new TaskTargetSubscription(subscription.id(),subscription.taskId(),subscription.targetId(),subscription.name(),subscription.description(),
-                subscription.status(),subscription.initializationStatus(),subscription.lastError(),events,0,subscription.initializedAt(),
+                subscription.status(),subscription.initializationStatus(),subscription.lastError(),events,bytes,subscription.initializedAt(),
                 subscription.createdAt(),subscription.updatedAt(),tables);
     }
 
@@ -159,6 +168,7 @@ public class TaskSubscriptionRepository {
                 rs.getObject("updated_at",OffsetDateTime.class),List.of());
     }
     private com.cdcplatform.model.Types.TableStatus displayStatus(String subscriptionStatus,String runtimeStatus){
+        if("CANCELLED".equalsIgnoreCase(subscriptionStatus)) return com.cdcplatform.model.Types.TableStatus.STOPPED;
         if("ACTIVE".equalsIgnoreCase(subscriptionStatus)) return com.cdcplatform.model.Types.TableStatus.RUNNING;
         if("FAILED".equalsIgnoreCase(subscriptionStatus)) return com.cdcplatform.model.Types.TableStatus.FAILED;
         if("PAUSED".equalsIgnoreCase(subscriptionStatus)) return com.cdcplatform.model.Types.TableStatus.PAUSED;

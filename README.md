@@ -1,10 +1,10 @@
 # CDC Platform
 
-Spring Boot 3 / Java 21 CDC 服务，Vue 3 管理台。一个同步任务绑定一个源连接、一个目标连接，并可配置多张表。源端支持 MySQL、SQL Server 和 StarRocks；目标端支持 MySQL、SQL Server、StarRocks Stream Load 和 Kafka。
+Spring Boot 3 / Java 21 CDC 服务，Vue 3 管理台。一个同步任务绑定一个源连接，支持多张源表及多个独立目标订阅。源端支持 MySQL、SQL Server 和 StarRocks；目标端支持 MySQL、SQL Server、StarRocks Stream Load 和 Kafka。
 
 ## 启动与构建
 
-需要 JDK 21、Maven 3.9+。执行 `mvn package` 会安装前端依赖、构建 Vue 页面并打入 Spring Boot JAR。运行 `java -jar target/cdc-platform-0.1.0-SNAPSHOT.jar` 后访问 `http://localhost:8080`。前端开发可在 `frontend/` 执行 `npm ci && npm run dev`；Vite 默认代理 `/api` 到 `127.0.0.1:8081`。
+需要 JDK 21、Maven 3.9+。执行 `mvn package` 会安装前端依赖、构建 Vue 页面并打入 Spring Boot JAR。运行 `java -jar target/cdc-platform-0.1.0-SNAPSHOT.jar` 后访问 `http://localhost:8080`。前端开发可在 `frontend/` 执行 `npm ci && npm run dev`；Vite 默认代理 `/api` 到 `127.0.0.1:8080`。
 
 如果通过 Docker 容器运行 Maven 并挂载源码，请额外挂载独立 volume 到 `/workspace/frontend/node_modules`，隔离 Linux 原生模块与宿主机的 macOS `node_modules`；宿主机开发依赖仍用宿主机 `npm ci` 安装。
 
@@ -19,7 +19,7 @@ Spring Boot 3 / Java 21 CDC 服务，Vue 3 管理台。一个同步任务绑定�
 - MySQL 须启用 `log_bin=ON`、`binlog_format=ROW`、`binlog_row_image=FULL`，并授予所需复制权限。SQL Server 需要数据库和每张源表启用原生 CDC。
 - StarRocks 作为源端仅支持主键快照对比轮询，不保证严格一致；其目标端使用 Stream Load。
 
-暂停保留采集位点、投递位点和待投递批次，恢复时先清空历史批次，再继续采集。停止会清除源端采集器位点，并将当前未完成批次标记为 `CANCELLED`；批次文件保留用于审计，但下次启动不会重放。运行期间只能改任务名称和描述；改连接、模式或字段映射需先停止。单表失败时其余表继续运行，任务进入 `DEGRADED`；全部失败则为 `FAILED`。抓取时间由后端生成 `Instant`，按任务时区（默认 `Asia/Shanghai`）格式化。
+暂停保留采集位点、投递位点和待投递批次，恢复时先按序投递积压批次，再继续投递新事件。停止会清除源端采集器位点，并将当前未完成批次标记为 `CANCELLED`；批次文件保留用于审计，但下次启动不会重放。运行期间只能改任务名称和描述；改连接、模式或字段映射需先停止。单表失败时其余表继续运行，任务进入 `DEGRADED`；全部失败则为 `FAILED`。抓取时间由后端生成 `Instant`，按任务时区（默认 `Asia/Shanghai`）格式化。
 
 ## 可靠投递
 
@@ -55,15 +55,30 @@ StarRocks 使用 Stream Load。`STEADY` 每个请求最多 500 行，`FREQUENT` 
 
 ## 测试
 
-`mvn test` 运行后端测试；`cd frontend && npm test` 运行前端单元测试。应用测试会验证 Flyway V7 可从空库和旧库升级，批次文件测试会验证稳定批次 ID、校验和与恢复读取；核对适配器测试覆盖 MySQL、SQL Server 和 StarRocks 的标识符引用、聚合表达式与批量参数限制。`MySqlTaskIntegrationTest` 使用 Testcontainers MySQL 8.4 验证全量、并发写入、增删改、暂停恢复以及目标端独有行保留。测试需要可访问的 Docker daemon；没有 Docker 时该测试会跳过，务必检查测试报告的 `skipped` 数。独立的 SQL Server、StarRocks Stream Load 和真实 MySQL 到 StarRocks 故障恢复验收仍需要可用环境；千万级数据上线前应在低峰期或只读副本压测，并覆盖“目标已提交但本地成功标记尚未写入”等进程终止点。
-# CdcProject
+`mvn test` 运行后端测试；`cd frontend && npm test` 运行前端单元测试。应用测试会验证 Flyway V11 可从空库和旧库升级，批次文件测试会验证稳定批次 ID、校验和与恢复读取；核对适配器测试覆盖 MySQL、SQL Server 和 StarRocks 的标识符引用、聚合表达式与批量参数限制。`MySqlTaskIntegrationTest` 使用 Testcontainers MySQL 8.4 验证全量、并发写入、增删改、暂停恢复以及目标端独有行保留。测试需要可访问的 Docker daemon；没有 Docker 时该测试会跳过，务必检查测试报告的 `skipped` 数。独立的 SQL Server、StarRocks Stream Load 和真实 MySQL 到 StarRocks 故障恢复验收仍需要可用环境；千万级数据上线前应在低峰期或只读副本压测，并覆盖“目标已提交但本地成功标记尚未写入”等进程终止点。
 
-## DBX 插件构建
+## 登录与权限
 
-独立 Web 构建使用 `cd frontend && npm run build`，输出到 Spring Boot 的 `target/generated-resources/static`。DBX 插件使用 `npm run build:dbx-plugin`，独立生成 `dist/cdc-console.dbxp` 和用于沙箱预验证的 `dist/cdc-sse-probe.dbxp`，不会覆盖独立 Web 资源。先安装探针验证主题、授权、SSE 连接与心跳；点击“连接并验证”可在断网恢复后重新建立连接并检查 `Last-Event-ID`。
+仅提供独立 Web，同源 REST 和 fetch SSE 使用 H2 持久化的 8 小时会话。首次安装创建管理员 `admin / admin123`；后续启动不会重置。登录页不展示或预填默认凭据。请在上线前通过当前用户菜单修改密码。
 
-插件模式要求宿主提供 `getHostInfo`、`getThemeTokens`、`onThemeChange`、`getBackendConfig` 和 `onBackendTokenChange`。`getBackendConfig` 返回后端 `baseUrl`、内存中的 `accessToken` 和可选 `expiresAt`；后端地址与令牌不能写入 Manifest 或浏览器持久化存储。宿主未提供后端能力时插件显示兼容性错误，不会按独立 Web 模式访问同源 API。
+- 只读用户：查看业务、审计及脱敏连接。
+- 普通用户：已有任务运维、订阅暂停恢复、连接测试、重试、核对、恢复和审计导出。
+- 管理员：业务配置、用户、SMTP、邮件规则和系统设置。
 
-后端默认 `CDC_BACKEND_AUTH_MODE=NONE`，保持现有独立部署行为。插件部署建议设置 `CDC_BACKEND_AUTH_MODE=BEARER`、`CDC_BACKEND_AUTH_ISSUER`、`CDC_BACKEND_AUTH_AUDIENCE` 和精确的 `CDC_BACKEND_CORS_ALLOWED_ORIGINS`；启用 Bearer 后 `/api/**` 需要有效 JWT。SSE 使用同一 Bearer 令牌，服务端保留最近 256 条非心跳事件用于 `Last-Event-ID` 回放；超出窗口时客户端刷新页面数据。
+所有 API（含兼容接口和 SSE）均强制鉴权。写请求先获取 `GET /api/auth/csrf`，随后携带 `X-CSRF-Token`；登录时轮换会话。Cookie 为 HttpOnly / SameSite=Strict，HTTPS 使用 Secure。反向代理须正确传递 HTTPS 协议，并保持同源和长连接；不要将 API 跨站公开。停用、删除、角色变更及重置密码会撤销关联会话与 SSE。用户名不重复使用，最后一名启用管理员受保护。
 
-正式安装前仍须在目标 DBX 版本中验证 Manifest/Host API 契约、沙箱 CSP `connect-src`、跨域预检、SSE 心跳与断线重连。仅本地打包成功不等于 DBX 宿主集成验收通过。
+侧栏“监控 / 审计日志”记录真实操作和恢复结果。日志仅保存脱敏配置，不保存密码或业务行。默认保留 180 天，可通过 `cdc.audit.retention-days` 调整。普通用户及管理员可导出当前过滤的 CSV。
+
+## 位点与目标表恢复
+
+任务详情“位点”区分源采集与各目标投递位置、真实本地积压和采样历史。MySQL 显示 binlog 文件/位置/行，SQL Server 显示 LSN，StarRocks 为快照差异轮询。未知事件时间不推算；活动任务每分钟采样，源端检查按连接和数据库缓存最多一分钟。只读查看不会访问源数据库，诊断执行源端只读查询。
+
+单表重跑、从失败批次继续、从上次成功投递后继续及按本地采集时间回放均明确选择目标表。预检验证文件、校验和、连续性、映射版本和 generation，返回五分钟计划，提交再次校验。恢复串行接管该目标表，保持其他表/目标继续运行，不回退共享 Debezium 位点。文件引用及游标持久化；目标失败可重试同一作业，重试使用相同批次 ID / Stream Load label，主动回放使用新 label，处理量单独统计。
+
+全量重跑先完整落盘目标专属快照，再追平持久化序号及源端边界；MySQL 需要查询 binlog 状态权限，SQL Server 必须启用 SNAPSHOT 隔离及允许读取 CDC 时间/LSN 映射。采集未追过边界时不能假装成功。扫描不完整的快照需要显式重试扫描；完整快照投递失败可从已有文件继续。StarRocks 源仍采用快照差异轮询，不能等同事务日志 CDC。
+
+默认按主键覆盖，**不清空目标**，源已不存在的历史目标行不会自动删除。Kafka 回放重新发送消息，必须确认重复风险并由下游按事件 ID 去重。保留期默认七天，但可回放范围以实际连续有效文件为准；不支持任意源位点编辑、跳过日志缺口、历史时点还原或 TRUNCATE 同步。
+
+运维 API：`/api/tasks/{id}/checkpoints`、`/checkpoints/history`、`/checkpoints/diagnose`、`/recoveries/precheck`、`/recoveries`、`/recoveries/{recoveryId}/actions/{pause|resume|retry}`。任务整体暂停或停止时请先恢复任务，再提交恢复操作。
+
+数据库 Logo 来源及使用说明见 [frontend/public/brands/README.md](frontend/public/brands/README.md)。DBX 入口、Host API、Bearer 免登录配置、探针和插件打包已移除；旧 Git 历史不改写。

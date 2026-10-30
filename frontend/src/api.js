@@ -1,29 +1,30 @@
-import { dbxHost } from './hostAdapter'
-
-function joinUrl(baseUrl, path) {
-  const base = String(baseUrl || '').replace(/\/$/, '')
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  return `${base.endsWith('/api') ? base : `${base}/api`}${normalizedPath}`
+let csrfToken = null
+let csrfRequest = null
+const base = String(import.meta.env.VITE_CDC_BACKEND_URL || '').replace(/\/$/, '')
+export function runtimeEventsPath() { return `${base}/api/runtime/events` }
+export async function loadCsrf() {
+  if (!csrfRequest) csrfRequest = fetch(`${base}/api/auth/csrf`, { credentials: 'include', cache: 'no-store' })
+    .then(async r => { if (!r.ok) throw new Error('无法获取安全令牌'); csrfToken = (await r.json()).token; return csrfToken })
+    .finally(() => { csrfRequest = null })
+  return csrfRequest
 }
-
-async function requestConfig() {
-  const config = await dbxHost.getBackendConfig()
-  return { baseUrl: config.baseUrl || '', token: config.accessToken || null }
-}
-
+export function resetCsrf() { csrfToken = null }
 export async function api(path, options = {}) {
-  const config = await requestConfig()
-  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
-  if (config.token) headers.Authorization = `Bearer ${config.token}`
-  const response = await fetch(joinUrl(config.baseUrl, path), { ...options, headers, credentials: config.token ? 'omit' : 'include' })
+  const method = (options.method || 'GET').toUpperCase()
+  if (!['GET','HEAD','OPTIONS'].includes(method) && !csrfToken) await loadCsrf()
+  const headers = { 'Content-Type': 'application/json', ...options.headers }
+  if (csrfToken && !['GET','HEAD','OPTIONS'].includes(method)) headers['X-CSRF-Token'] = csrfToken
+  const response = await fetch(`${base}/api${path}`, { ...options, headers, credentials: 'include', cache: 'no-store' })
   if (response.status === 204) return null
-  const body = await response.json().catch(() => ({}))
+  if (options.blob && response.ok) return response.blob()
+  const body = await response.text()
+  let data; try { data = body ? JSON.parse(body) : null } catch { data = null }
   if (!response.ok) {
-    const message = response.status === 401 ? '后端认证已失效，请在 DBX 插件设置中重新授权' : response.status === 403 ? '当前凭据没有此操作权限' : body.error || `请求失败 (${response.status})`
-    throw new Error(message)
+    if (response.status === 401 && path !== '/auth/login') { resetCsrf(); window.dispatchEvent(new Event('cdc-session-expired')) }
+    const error = new Error(data?.error || data?.message || (response.status === 403 ? '当前角色没有此操作权限，或安全令牌已失效' : `请求失败 (${response.status})`))
+    error.status = response.status
+    throw error
   }
-  return body
+  return data
 }
-
-export function runtimeEventsPath(baseUrl = '') { return joinUrl(baseUrl, '/runtime/events') }
 export const getAll = async path => (await api(path + (path.includes('?') ? '&' : '?') + 'page=0&size=500')).items

@@ -28,6 +28,14 @@ class TaskApiTest {
     @Autowired ConfigRepository configs;
     @Autowired ObjectMapper json;
     @Autowired org.springframework.jdbc.core.simple.JdbcClient jdbc;
+    @Autowired com.cdcplatform.service.ConsoleIdentityService identities;
+    @org.junit.jupiter.api.BeforeEach void authenticate(){
+        var user=identities.authenticate("admin","admin123");var session=identities.newSession(user.id());
+        mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.webAppContextSetup(context)
+            .addFilters(security).defaultRequest(get("/").cookie(new jakarta.servlet.http.Cookie("CDC_SESSION",session.id())).header("X-CSRF-Token",session.csrf())).build();
+    }
+    @Autowired org.springframework.web.context.WebApplicationContext context;
+    @Autowired org.springframework.security.web.FilterChainProxy security;
 
     @Test void taskApiSavesDraftRenamesAndRejectsLegacyWrites() throws Exception {
         long source = configs.addSource(new SourceConfig(null, "api-source", DatabaseType.MYSQL,

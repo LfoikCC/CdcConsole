@@ -17,6 +17,9 @@ public class RuntimeEventService {
     private final ArrayDeque<RuntimeEvent> recent = new ArrayDeque<>();
     private long sequence;
     private static final int HISTORY_LIMIT = 256;
+    private final ConsoleIdentityService identities;
+    private final java.util.concurrent.ConcurrentHashMap<SseEmitter,String> sessions = new java.util.concurrent.ConcurrentHashMap<>();
+    public RuntimeEventService(ConsoleIdentityService identities){this.identities=identities;}
 
     @org.springframework.transaction.event.TransactionalEventListener(fallbackExecution = true)
     public void logWritten(com.cdcplatform.repository.TaskRepository.TaskLogWritten event) {
@@ -25,8 +28,13 @@ public class RuntimeEventService {
 
     public synchronized SseEmitter subscribe(String lastEventId) {
         var emitter = new SseEmitter(0L);
+        var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if(attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet){
+            String session=com.cdcplatform.api.IdentityController.cookie(servlet.getRequest());
+            if(session!=null)sessions.put(emitter,session);
+        }
         emitters.add(emitter);
-        emitter.onCompletion(() -> emitters.remove(emitter));
+        emitter.onCompletion(() -> {emitters.remove(emitter);sessions.remove(emitter);});
         emitter.onTimeout(() -> emitters.remove(emitter));
         emitter.onError(error -> emitters.remove(emitter));
         long cursor = parseCursor(lastEventId);
@@ -46,7 +54,12 @@ public class RuntimeEventService {
         return emitter;
     }
 
-    public synchronized void publish(String event, Object value) {
+    public void publish(String event,Object value){
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()){
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){@Override public void afterCommit(){publishCommitted(event,value);}});
+        }else publishCommitted(event,value);
+    }
+    private synchronized void publishCommitted(String event, Object value) {
         var item = new RuntimeEvent(++sequence, event, value);
         if (!"heartbeat".equals(event)) {
             recent.addLast(item);
@@ -64,9 +77,16 @@ public class RuntimeEventService {
     }
 
     private void send(SseEmitter emitter, RuntimeEvent event) {
+        String session=sessions.get(emitter);
+        if(session!=null && identities.sessionUser(identities.session(session))==null){sessions.remove(emitter);emitters.remove(emitter);emitter.complete();return;}
         try { emitter.send(SseEmitter.event().id(Long.toString(event.id())).name(event.name()).data(event.value())); }
         catch (IOException | IllegalStateException e) { emitters.remove(emitter); emitter.complete(); }
     }
 
     private record RuntimeEvent(long id, String name, Object value) {}
+
+    @org.springframework.transaction.event.TransactionalEventListener(fallbackExecution=true)
+    public void sessionsRevoked(ConsoleIdentityService.SessionsRevoked event){
+        sessions.forEach((emitter,session)->{if(event.sessions().contains(session)){sessions.remove(emitter);emitters.remove(emitter);emitter.complete();}});
+    }
 }

@@ -47,6 +47,7 @@ public class DeliveryService {
     private final ReconciliationRepository reconciliations;
     private final ObjectMapper json;
     private final CaptureGroupService captureGroups;
+    private final org.springframework.transaction.support.TransactionTemplate transaction;
     private final int maxAttempts;
     private final long maxPendingBytes;
     private final int retentionDays;
@@ -56,27 +57,34 @@ public class DeliveryService {
     public DeliveryService(SegmentCache cache, DeliveryBatchRepository batches, TargetWriterRegistry writers,
                            TaskRepository tasks, ConfigRepository configs, RuntimeEventService events,
                            CdcProperties properties, ReconciliationRepository reconciliations, ObjectMapper json,
-                           CaptureGroupService captureGroups) {
+                           CaptureGroupService captureGroups, org.springframework.transaction.PlatformTransactionManager transactions) {
         this.cache = cache; this.batches = batches; this.writers = writers; this.tasks = tasks;
         this.configs = configs; this.events = events; this.maxAttempts = properties.getDelivery().getMaxAttempts();
         this.maxPendingBytes = properties.getDelivery().getMaxPendingBytes();
         this.retentionDays = properties.getCache().getRetentionDays();
         this.reconciliations = reconciliations; this.json = json;
         this.captureGroups = captureGroups;
+        this.transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
     }
 
     @PostConstruct void recover() {
         batches.recoverInterrupted();
         for (var descriptor : cache.readyBatches()) {
+            if (descriptor.sourceStart()!=null && descriptor.sourceStart().startsWith("SUBSCRIPTION_RECOVERY")) continue;
             if (batches.exists(descriptor.batchId())) continue;
             Long taskId = tasks.taskIdForMapping(descriptor.mappingId());
             var table = tasks.tableForMapping(descriptor.mappingId());
             if (taskId == null || table == null) continue;
             var target = configs.target(configs.mapping(descriptor.mappingId()).targetId(), false);
-            batches.registerStaged(new DeliveryBatch(descriptor.batchId(), taskId, table.id(), descriptor.mappingId(),
+            var batch = new DeliveryBatch(descriptor.batchId(), taskId, table.id(), descriptor.mappingId(),
                     descriptor.generation(), target.targetType(), descriptor.sourceStart(), descriptor.sourceEnd(),
                     descriptor.path().toString(), descriptor.checksum(), descriptor.eventCount(), descriptor.payloadBytes(),
-                    BatchStatus.STAGED, 0, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null));
+                    BatchStatus.STAGED, 0, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null);
+            long currentGeneration = captureGroups.group(captureGroups.ensureForMapping(descriptor.mappingId())).generation();
+            long captureGeneration = descriptor.captureGeneration() == null ? currentGeneration : descriptor.captureGeneration();
+            if (captureGeneration != currentGeneration) continue; // Never resurrect a cancelled source generation.
+            var recoveredEvents = cache.readBatch(descriptor.path(), descriptor.checksum());
+            transaction.executeWithoutResult(status -> registerStage(batch, recoveredEvents, captureGeneration));
         }
         for (var task : tasks.tasks()) {
             boolean recoveredTable = task.tables().stream().anyMatch(table -> table.status() != null
@@ -87,7 +95,7 @@ public class DeliveryService {
         }
     }
 
-    public StageResult stage(List<ChangeEvent> rawEvents, String sourceStart, String sourceEnd, long generation) {
+    public synchronized StageResult stage(List<ChangeEvent> rawEvents, String sourceStart, String sourceEnd, long generation) {
         if (rawEvents == null || rawEvents.isEmpty()) throw new IllegalArgumentException("delivery batch is empty");
         if (batches.pendingBytes() >= maxPendingBytes)
             throw new IllegalStateException("本地待投递数据已达到磁盘背压上限");
@@ -98,34 +106,49 @@ public class DeliveryService {
         var table = tasks.tableForMapping(mappingId);
         if (taskId == null || table == null) throw new IllegalStateException("mapping is not attached to a sync task");
         var normalized = rawEvents.stream().map(ChangeEvent::normalized).toList();
-        var staged = cache.appendBatch(mappingId, generation, sourceStart, sourceEnd, normalized);
+        boolean targetOnly = sourceStart != null && sourceStart.startsWith("SUBSCRIPTION_");
+        long captureGeneration = targetOnly ? generation : captureGroups.group(captureGroups.ensureForMapping(mappingId)).generation();
+        var staged = cache.appendBatch(mappingId, generation, sourceStart, sourceEnd, normalized, captureGeneration);
         var target = configs.target(configs.mapping(mappingId).targetId(), false);
         var batch = new DeliveryBatch(staged.batchId(), taskId, table.id(), mappingId, generation, target.targetType(),
                 sourceStart, sourceEnd, staged.path().toString(), staged.checksum(), staged.eventCount(), staged.payloadBytes(),
                 BatchStatus.STAGED, 0, null, null, OffsetDateTime.now(), OffsetDateTime.now(), null);
+        transaction.executeWithoutResult(status -> registerStage(batch, normalized, captureGeneration));
+        // Do not let virtual delivery threads observe uncommitted fan-out or missing sequence metadata.
+        if (!targetOnly) captureGroups.subscriptionsForMapping(mappingId).forEach(subscription -> {
+            if (subscription.mappingId() != null) trigger(subscription.mappingId());
+        });
+        trigger(mappingId);
+        return new StageResult(staged.batchId(), staged.path(), normalized);
+    }
+
+    private void registerStage(DeliveryBatch batch, List<ChangeEvent> normalized, long captureGeneration) {
+        long mappingId = batch.mappingId(), generation = batch.generation();
+        String sourceStart = batch.sourceStartPosition(), sourceEnd = batch.sourceEndPosition();
         batches.registerStaged(batch);
-        captureGroups.registerCaptureBatch(mappingId, sourceStart, sourceEnd, generation, staged.path().toString(),
-                staged.checksum(), staged.eventCount(), staged.payloadBytes());
+        boolean targetOnly = sourceStart != null && sourceStart.startsWith("SUBSCRIPTION_");
+        if (!targetOnly) captureGroups.registerCaptureBatch(mappingId, sourceStart, sourceEnd, captureGeneration, batch.segmentPath(),
+                batch.checksum(), batch.eventCount(), batch.payloadBytes());
+        if (!targetOnly) batches.updateCaptureMetadata(batch.segmentPath(), normalized);
         // Compatibility fan-out: all mappings subscribed to the same source group reuse this
         // immutable segment. Their writers and delivery positions remain independent.
-        for (var subscription : captureGroups.subscriptionsForMapping(mappingId)) {
+        for (var subscription : targetOnly ? List.<com.cdcplatform.model.TargetSubscription>of() : captureGroups.subscriptionsForMapping(mappingId)) {
             if (subscription.mappingId() == null || subscription.mappingId() == mappingId) continue;
             long otherMapping = subscription.mappingId();
             Long otherTaskId = tasks.taskIdForMapping(otherMapping);
             var otherTable = tasks.tableForMapping(otherMapping);
             if (otherTaskId == null || otherTable == null) continue;
             var otherTarget = configs.target(configs.mapping(otherMapping).targetId(), false);
-            String derivedId = (staged.batchId() + "-m" + otherMapping);
+            String derivedId = (batch.batchId() + "-m" + otherMapping);
             if (derivedId.length() > 96) derivedId = derivedId.substring(0, 96);
             var derived = new DeliveryBatch(derivedId, otherTaskId, otherTable.id(), otherMapping, generation,
-                    otherTarget.targetType(), sourceStart, sourceEnd, staged.path().toString(), staged.checksum(),
-                    staged.eventCount(), staged.payloadBytes(), BatchStatus.STAGED, 0, null, null,
+                    otherTarget.targetType(), sourceStart, sourceEnd, batch.segmentPath(), batch.checksum(),
+                    batch.eventCount(), batch.payloadBytes(), BatchStatus.STAGED, 0, null, null,
                     OffsetDateTime.now(), OffsetDateTime.now(), null);
-            if (batches.registerStaged(derived)) trigger(otherMapping);
+            batches.registerStaged(derived);
+            registerDeleteAudits(derived, normalized);
         }
         registerDeleteAudits(batch, normalized);
-        trigger(mappingId);
-        return new StageResult(staged.batchId(), staged.path(), normalized);
     }
 
     public DeliveryOutcome stageAndAwait(List<ChangeEvent> events, String sourceStart, String sourceEnd,
@@ -147,17 +170,14 @@ public class DeliveryService {
     void tick() { batches.mappingsWithWork().forEach(this::trigger); }
 
     @Scheduled(cron = "0 30 2 * * *")
-    void cleanSucceededFiles() {
+    synchronized void cleanSucceededFiles() {
         OffsetDateTime before = OffsetDateTime.now().minusDays(retentionDays);
         for (String file : batches.successfulFilesBefore(before))
             try { java.nio.file.Files.deleteIfExists(Path.of(file)); } catch (Exception ignored) {}
     }
 
     public void trigger(long mappingId) {
-        if (suspended.contains(mappingId)) return;
-        Long taskId = tasks.taskIdForMapping(mappingId);
-        if (taskId != null && java.util.Set.of(TaskStatus.PAUSED, TaskStatus.STOPPED, TaskStatus.DRAFT)
-                .contains(tasks.task(taskId).status())) return;
+        if (!deliveryAllowed(mappingId)) return;
         if (active.putIfAbsent(mappingId, Boolean.TRUE) != null) return;
         Thread.startVirtualThread(() -> {
             try { drain(mappingId); }
@@ -167,6 +187,7 @@ public class DeliveryService {
 
     private void drain(long mappingId) {
         while (true) {
+            if (!deliveryAllowed(mappingId)) return;
             DeliveryBatch head = batches.head(mappingId);
             if (head == null || head.status() == BatchStatus.FAILED || head.status() == BatchStatus.CANCELLED) return;
             if (head.status() == BatchStatus.RETRY_WAIT && head.nextRetryAt() != null
@@ -200,7 +221,7 @@ public class DeliveryService {
                 }
                 batches.markFailed(current.batchId(), message);
                 captureGroups.markBatch(current.mappingId(), current.checksum(), "FAILED", message);
-                configs.setMappingEnabled(mappingId, false);
+                if(tasks.taskIdForMapping(mappingId)==null)configs.setMappingEnabled(mappingId, false);
                 writers.invalidate(mappingId);
                 tasks.addLog(current.taskId(), current.taskTableId(), "ERROR",
                         "批次 " + current.batchId() + " 写入失败：" + message);
@@ -212,8 +233,14 @@ public class DeliveryService {
         }
     }
 
+    private boolean deliveryAllowed(long mappingId) {
+        if (suspended.contains(mappingId) || batches.recoveryActive(mappingId) || !tasks.captureActive(mappingId)) return false;
+        return batches.subscriptionActive(mappingId);
+    }
+
     public void retry(long taskId, String batchId) {
         var batch = batches.batch(batchId);
+        if (batches.recoveryActive(batch.mappingId())) throw new IllegalStateException("该目标表正在恢复，请在恢复作业中重试");
         if (batch.taskId() != taskId) throw new IllegalArgumentException("delivery batch not found");
         batches.retry(batchId);
         suspended.remove(batch.mappingId());
@@ -237,11 +264,20 @@ public class DeliveryService {
     public boolean hasPending(long mappingId) { return batches.hasPending(mappingId); }
 
     public void finalizeExtractionCycle(long mappingId, long generation) {
+        if(tasks.taskIdForMapping(mappingId)!=null&&configs.source(configs.mapping(mappingId).sourceId(),false).dbType()==com.cdcplatform.model.Types.DatabaseType.STARROCKS)return;
         if (generation <= 0 || !batches.cycleReady(mappingId, generation)) return;
         String checkpoint = batches.cycleCheckpoint(mappingId, generation);
         configs.promoteSnapshotStage(mappingId, generation);
         if (checkpoint != null && !checkpoint.isBlank()) configs.saveCheckpoint(mappingId, checkpoint);
         batches.completeCycle(mappingId, generation);
+    }
+
+    /** Source snapshot baseline advances after durable capture, independently of target delivery. */
+    @org.springframework.transaction.annotation.Transactional
+    public void completeCapturedCycle(long mappingId,long generation,String checkpoint){
+        configs.promoteSnapshotStage(mappingId,generation);
+        configs.saveCheckpoint(mappingId,checkpoint);
+        batches.completeCycle(mappingId,generation);
     }
 
     private boolean retryable(Throwable error) {
@@ -283,7 +319,7 @@ public class DeliveryService {
         }
     }
 
-    private void applyDeleteAudits(DeliveryBatch batch, List<ChangeEvent> events) {
+    public void applyDeleteAudits(DeliveryBatch batch, List<ChangeEvent> events) {
         var table = tasks.tableForMapping(batch.mappingId());
         if (table == null || table.keyColumns().isEmpty()) return;
         for (var event : events) {
@@ -308,5 +344,13 @@ public class DeliveryService {
     }
 
     public record StageResult(String batchId, Path path, List<ChangeEvent> events) {}
+    public void suspendAndAwait(long mappingId) {
+        suspended.add(mappingId);
+        long deadline=System.currentTimeMillis()+120000;
+        while(active.containsKey(mappingId)) {
+            if(System.currentTimeMillis()>deadline) throw new IllegalStateException("等待当前目标批次结束超时，请稍后重试");
+            try{Thread.sleep(50);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException("等待目标批次时被中断",e);}
+        }
+    }
     public record DeliveryOutcome(String batchId, boolean delivered, String error) {}
 }

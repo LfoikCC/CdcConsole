@@ -31,7 +31,7 @@ class TaskRuntimeServiceTest {
         var updated = new SyncTaskTable(3L, 4L, "db", null, "orders", null, "orders_copy",
                 Map.of("id", "id"), List.of("id"), false, false, null, null, null, Map.of(),
                 null, null, null, null, 5, 0, null, null, null);
-        when(tasks.tasks()).thenReturn(List.of(task(table)), List.of(task(updated)));
+        when(tasks.samplingTasks()).thenReturn(List.of(task(table)), List.of(task(updated)));
         when(configs.source(1L, false)).thenReturn(new SourceConfig(1L, "src", DatabaseType.MYSQL,
                 "localhost", 3306, "", "user", "", 500, true, null));
         when(coordinator.readCount(4L)).thenReturn(0L, 10L);

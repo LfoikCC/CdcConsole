@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:dbx-plugin": "vite build --mode dbx && node ../scripts/build-dbx-plugin.mjs",
     "test": "vitest run"
   },
   "dependencies": {

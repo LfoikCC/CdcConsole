@@ -94,6 +94,8 @@ public class CaptureGroupRepository {
                 .param("id", id).param("status", status).param("error", error).update();
     }
     public void updateSubscription(long id, Map<String, Object> body) {
+        if(jdbc.sql("SELECT COUNT(*) FROM recovery_job WHERE mapping_id=(SELECT mapping_id FROM cdc_target_subscription WHERE id=:id) AND status NOT IN ('SUCCEEDED','CANCELLED')").param("id",id).query(Long.class).single()>0)
+            throw new IllegalStateException("该目标表有未完成恢复作业，不能修改映射");
         long targetId = body.get("targetId") == null ? -1 : Long.parseLong(String.valueOf(body.get("targetId")));
         String schema = body.get("targetSchema") == null ? null : String.valueOf(body.get("targetSchema"));
         String table = body.get("targetTable") == null ? null : String.valueOf(body.get("targetTable"));
@@ -114,11 +116,13 @@ public class CaptureGroupRepository {
     public boolean registerCaptureBatch(CaptureBatch batch) {
         long count = jdbc.sql("SELECT COUNT(*) FROM cdc_capture_batch WHERE capture_batch_id=:id").param("id", batch.captureBatchId()).query(Long.class).single();
         if (count > 0) return false;
-        jdbc.sql("INSERT INTO cdc_capture_batch(capture_batch_id,capture_group_id,generation,source_start_position,source_end_position,segment_path,checksum,event_count,payload_bytes,status) " +
-                        "VALUES(:id,:group,:generation,:start,:end,:path,:checksum,:events,:bytes,:status)")
+        jdbc.sql("INSERT INTO cdc_capture_batch(capture_batch_id,capture_group_id,generation,source_start_position,source_end_position,segment_path,checksum,event_count,payload_bytes,status,previous_sequence) " +
+                        "VALUES(:id,:group,:generation,:start,:end,:path,:checksum,:events,:bytes,:status,(SELECT COALESCE(MAX(sequence_no),0) FROM cdc_capture_batch WHERE capture_group_id=:group AND batch_kind<>'TARGET_SNAPSHOT'))")
                 .param("id", batch.captureBatchId()).param("group", batch.captureGroupId()).param("generation", batch.generation())
                 .param("start", batch.sourceStartPosition()).param("end", batch.sourceEndPosition()).param("path", batch.segmentPath())
                 .param("checksum", batch.checksum()).param("events", batch.eventCount()).param("bytes", batch.payloadBytes()).param("status", batch.status()).update();
+        jdbc.sql("UPDATE cdc_capture_batch SET source_identity=(SELECT source_identity FROM cdc_capture_group WHERE id=:group) WHERE capture_batch_id=:id")
+                .param("group",batch.captureGroupId()).param("id",batch.captureBatchId()).update();
         return true;
     }
     @Transactional
@@ -168,7 +172,7 @@ public class CaptureGroupRepository {
     }
 
     private CaptureGroup mapGroup(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new CaptureGroup(rs.getLong("id"),rs.getLong("source_id"),rs.getString("source_database"),rs.getString("source_schema"),rs.getString("source_table"),rs.getString("sync_mode"),rs.getString("canonical_schema_json"),rs.getString("status"),rs.getString("capture_position_json"),rs.getLong("generation"),rs.getLong("max_pending_bytes"),rs.getString("last_error"),rs.getObject("created_at", OffsetDateTime.class),rs.getObject("updated_at", OffsetDateTime.class)); }
-    private TargetSubscription mapSubscription(java.sql.ResultSet rs, int row) throws java.sql.SQLException { long mapping=rs.getLong("mapping_id"); return new TargetSubscription(rs.getLong("id"),rs.getLong("capture_group_id"),rs.wasNull()?null:mapping,rs.getLong("target_id"),rs.getString("target_schema"),rs.getString("target_table"),rs.getString("mapping_override_json"),rs.getLong("mapping_version"),rs.getString("status"),rs.getString("delivery_position_json"),rs.getLong("max_pending_bytes"),rs.getLong("pending_bytes"),rs.getLong("pending_events"),rs.getString("last_error"),rs.getObject("created_at", OffsetDateTime.class),rs.getObject("updated_at", OffsetDateTime.class)); }
+    private TargetSubscription mapSubscription(java.sql.ResultSet rs, int row) throws java.sql.SQLException { long mapping=rs.getLong("mapping_id"); boolean missingMapping=rs.wasNull(); return new TargetSubscription(rs.getLong("id"),rs.getLong("capture_group_id"),missingMapping?null:mapping,rs.getLong("target_id"),rs.getString("target_schema"),rs.getString("target_table"),rs.getString("mapping_override_json"),rs.getLong("mapping_version"),rs.getString("status"),rs.getString("delivery_position_json"),rs.getLong("max_pending_bytes"),rs.getLong("pending_bytes"),rs.getLong("pending_events"),rs.getString("last_error"),rs.getObject("created_at", OffsetDateTime.class),rs.getObject("updated_at", OffsetDateTime.class)); }
     private CaptureBatch mapCaptureBatch(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new CaptureBatch(rs.getString("capture_batch_id"),rs.getLong("capture_group_id"),rs.getLong("generation"),rs.getString("source_start_position"),rs.getString("source_end_position"),rs.getString("segment_path"),rs.getString("checksum"),rs.getInt("event_count"),rs.getLong("payload_bytes"),rs.getString("status"),rs.getObject("created_at", OffsetDateTime.class)); }
     private SubscriptionBatch mapSubscriptionBatch(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new SubscriptionBatch(rs.getString("subscription_batch_id"),rs.getLong("subscription_id"),rs.getString("capture_batch_id"),rs.getString("status"),rs.getInt("attempt_count"),rs.getObject("next_retry_at", OffsetDateTime.class),rs.getString("last_error"),rs.getObject("created_at", OffsetDateTime.class),rs.getObject("updated_at", OffsetDateTime.class),rs.getObject("delivered_at", OffsetDateTime.class)); }
 }
