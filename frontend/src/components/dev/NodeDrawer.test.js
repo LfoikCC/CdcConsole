@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import NodeDrawer from './NodeDrawer.vue'
-import { CdcSelect, components } from '../ui'
+import { components } from '../ui'
+import { api } from '../../api'
 
 vi.mock('../../api', () => ({ api: vi.fn() }))
+vi.mock('../ui/feedback', () => ({ CdcMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn() } }))
 
 const upstreamColumns = [{ label: 'id' }, { label: 'amount' }, { label: 'status' }]
+const secondUpstreamColumns = [{ label: 'id' }, { label: 'city' }]
 
 function mountDrawer(node) {
   return mount(NodeDrawer, {
@@ -14,6 +17,7 @@ function mountDrawer(node) {
       sources: [],
       targets: [],
       upstreamColumns,
+      secondUpstreamColumns,
       preview: null,
       busy: false
     },
@@ -47,20 +51,22 @@ describe('NodeDrawer', () => {
     expect(wrapper.emitted('apply')[0][0].name).toBe('行过滤')
   })
 
-  it('replaces the whole config when switching operators', async () => {
-    const wrapper = mountDrawer(filterNode())
-    const operatorSelect = wrapper.findAllComponents(CdcSelect)[0]
-    await operatorSelect.vm.$emit('update:modelValue', 'AGGREGATE')
-    await flushPromises()
+  it('shows the operator as a fixed label instead of a selector', async () => {
+    const wrapper = mountDrawer({
+      id: 'n5',
+      type: 'OPERATOR',
+      name: '分组聚合',
+      config: { operator: 'AGGREGATE', groupBy: [], aggregates: [] }
+    })
 
+    expect(wrapper.find('.nd-head strong').text()).toBe('分组聚合')
     expect(wrapper.text()).toContain('添加聚合项')
-    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    expect(wrapper.findAll('select')).toHaveLength(0)
 
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
     const config = wrapper.emitted('apply')[0][0].config
     expect(config.operator).toBe('AGGREGATE')
     expect(config.aggregates).toEqual([])
-    // SORT/DEDUP 共用 keys 的历史残留不能带过来
-    expect(config.conditions).toBeUndefined()
   })
 
   it('renders the calculate form with the upstream columns as a hint', async () => {
@@ -74,5 +80,56 @@ describe('NodeDrawer', () => {
     expect(wrapper.text()).toContain('新列名')
     expect(wrapper.text()).toContain('id、amount、status')
     expect(wrapper.text()).toContain('DECIMAL(38,10)')
+  })
+
+  it('adds join keys from both upstreams', async () => {
+    const wrapper = mountDrawer({
+      id: 'n3',
+      type: 'OPERATOR',
+      name: '关联数据',
+      config: { operator: 'JOIN', joinType: 'INNER', keys: [] }
+    })
+
+    expect(wrapper.text()).toContain('关联类型')
+    const add = wrapper.findAll('button').find(button => button.text().includes('添加关联键'))
+    await add.trigger('click')
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+
+    expect(wrapper.emitted('apply')[0][0].config.keys).toEqual([{ left: 'id', right: 'id' }])
+  })
+
+  it('creates an offline dataset from the dataset output drawer', async () => {
+    api.mockResolvedValue({ id: 99 })
+    const wrapper = mountDrawer({
+      id: 'o1',
+      type: 'DATASET_OUTPUT',
+      name: '写离线',
+      config: { datasetId: null, mode: 'OVERWRITE' }
+    })
+
+    await wrapper.find('input[placeholder="新离线数据集名称"]').setValue('离线结果')
+    await wrapper.findAll('button').find(button => button.text().includes('新建离线数据集')).trigger('click')
+    await flushPromises()
+
+    expect(api).toHaveBeenCalledWith('/datasets/extract', {
+      method: 'POST',
+      body: JSON.stringify({ name: '离线结果', description: '' })
+    })
+    expect(wrapper.emitted('dataset-created')[0][0]).toEqual({ id: 99 })
+
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    expect(wrapper.emitted('apply')[0][0].config.datasetId).toBe(99)
+  })
+
+  it('warns when union sides have different column counts', () => {
+    const wrapper = mountDrawer({
+      id: 'n4',
+      type: 'OPERATOR',
+      name: '行拼接',
+      config: { operator: 'UNION', mode: 'ALL' }
+    })
+
+    expect(wrapper.text()).toContain('左表 3 列、右表 2 列')
+    expect(wrapper.text()).toContain('两侧列数不一致')
   })
 })

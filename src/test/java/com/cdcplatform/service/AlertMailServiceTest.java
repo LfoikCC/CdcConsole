@@ -17,9 +17,9 @@ class AlertMailServiceTest {
     @BeforeEach void setup() {
         var ds=new DriverManagerDataSource("jdbc:h2:mem:mail_"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1","sa","");
         Flyway.configure().dataSource(ds).load().migrate();jdbc=JdbcClient.create(ds);service=new AlertMailService(jdbc,new ObjectMapper());
-        jdbc.sql("INSERT INTO cdc_source(id,name,db_type,host,port,database_name,username,password) VALUES(1,'source','MYSQL','localhost',3306,'db','user','')").update();
-        jdbc.sql("INSERT INTO cdc_target(id,name,target_type,config_json) VALUES(1,'target','MYSQL','{}')").update();
-        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode) VALUES(1,'task',1,1,'INCREMENTAL_ONLY')").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(1,'source','MYSQL','localhost',3306,'db','user','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(2,'target','MYSQL','localhost',3306,'db','user','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode) VALUES(1,'task',1,2,'INCREMENTAL_ONLY')").update();
     }
     @Test void passwordsAreMaskedAndBlankUpdatesPreserveThem() {
         service.save(new AlertMailService.Config(false,"localhost",587,"starttls","user","secret","CDC","cdc@example.com",false));

@@ -81,19 +81,25 @@ public class TaskRepository {
                 .orElse(SyncMode.INCREMENTAL_ONLY);
     }
 
+    /** 任务级轮询间隔；null 表示沿用账户配置。 */
+    public Integer pollIntervalMsForMapping(long mappingId) {
+        return jdbc.sql("SELECT t.poll_interval_ms FROM sync_task t JOIN sync_task_table st ON st.task_id=t.id WHERE st.mapping_id=:id")
+                .param("id", mappingId).query(Integer.class).optional().orElse(null);
+    }
+
     @Transactional
     public long create(SyncTask value) {
         validate(value, null);
         long id = nextId();
         jdbc.sql("INSERT INTO sync_task(id,name,description,source_id,target_id,sync_mode,ddl_policy,time_zone,status,version," +
-                        "alert_lag_seconds,reconciliation_cron,reconciliation_delay_minutes,reconciliation_window_minutes,reconcile_after_snapshot) " +
-                        "VALUES(:id,:name,:description,:source,:target,:mode,:ddl,:zone,:status,0,:lag,:cron,:delay,:window,:afterSnapshot)")
+                        "alert_lag_seconds,reconciliation_cron,reconciliation_delay_minutes,reconciliation_window_minutes,reconcile_after_snapshot,poll_interval_ms) " +
+                        "VALUES(:id,:name,:description,:source,:target,:mode,:ddl,:zone,:status,0,:lag,:cron,:delay,:window,:afterSnapshot,:pollInterval)")
                 .param("id", id).param("name", value.name().trim()).param("description", value.description())
                 .param("source", value.sourceId()).param("target", value.targetId()).param("mode", value.syncMode().name())
                 .param("ddl", value.ddlPolicy().name()).param("zone", value.timeZone()).param("status", TaskStatus.DRAFT.name())
                 .param("lag", value.alertLagSeconds()).param("cron", blankToNull(value.reconciliationCron()))
                 .param("delay", value.reconciliationDelayMinutes()).param("window", value.reconciliationWindowMinutes())
-                .param("afterSnapshot", value.reconcileAfterSnapshot()).update();
+                .param("afterSnapshot", value.reconcileAfterSnapshot()).param("pollInterval", value.pollIntervalMs()).update();
         insertTables(id, value);
         addLog(id, null, "INFO", "任务已创建，等待启动");
         return id;
@@ -111,13 +117,14 @@ public class TaskRepository {
         int changed = jdbc.sql("UPDATE sync_task SET name=:name,description=:description,source_id=:source,target_id=:target," +
                         "sync_mode=:mode,ddl_policy=:ddl,time_zone=:zone,alert_lag_seconds=:lag,reconciliation_cron=:cron," +
                         "reconciliation_delay_minutes=:delay,reconciliation_window_minutes=:window,reconcile_after_snapshot=:afterSnapshot," +
+                        "poll_interval_ms=:pollInterval," +
                         "version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=:id AND version=:version AND status IN ('DRAFT','STOPPED')")
                 .param("id", id).param("version", value.version()).param("name", value.name().trim())
                 .param("description", value.description()).param("source", value.sourceId()).param("target", value.targetId())
                 .param("mode", value.syncMode().name()).param("ddl", value.ddlPolicy().name()).param("zone", value.timeZone())
                 .param("lag", value.alertLagSeconds()).param("cron", blankToNull(value.reconciliationCron()))
                 .param("delay", value.reconciliationDelayMinutes()).param("window", value.reconciliationWindowMinutes())
-                .param("afterSnapshot", value.reconcileAfterSnapshot()).update();
+                .param("afterSnapshot", value.reconcileAfterSnapshot()).param("pollInterval", value.pollIntervalMs()).update();
         if (changed != 1) throw new IllegalStateException("任务配置已发生变化，请刷新后重试");
         jdbc.sql("DELETE FROM sync_task_table WHERE task_id=:id").param("id", id).update();
         mappingIds.forEach(configs::deleteMapping);
@@ -316,10 +323,44 @@ public class TaskRepository {
         String sql = "SELECT * FROM alert_event" + (status == null ? "" : " WHERE status=:status") + " ORDER BY created_at DESC,id DESC";
         var statement = jdbc.sql(sql);
         if (status != null) statement.param("status", status.name());
-        return statement.query((rs, row) -> new AlertEvent(rs.getLong("id"), rs.getLong("task_id"),
+        return statement.query(this::readAlert).list();
+    }
+
+    /** 服务端分页：告警只增不减，不能每次都把全表拉到前端。 */
+    public com.cdcplatform.model.PageResult<AlertEvent> alerts(AlertStatus status, int page, int size) {
+        int safeSize = Math.max(1, Math.min(size, 100));
+        int safePage = Math.max(0, page);
+        String where = status == null ? "" : " WHERE status=:status";
+        var count = jdbc.sql("SELECT COUNT(*) FROM alert_event" + where);
+        var rows = jdbc.sql("SELECT * FROM alert_event" + where + " ORDER BY created_at DESC,id DESC LIMIT :size OFFSET :offset");
+        if (status != null) {
+            count.param("status", status.name());
+            rows.param("status", status.name());
+        }
+        long total = count.query(Long.class).single();
+        var items = rows.param("size", safeSize).param("offset", (long) safePage * safeSize)
+                .query(this::readAlert).list();
+        int totalPages = total == 0 ? 0 : (int) Math.ceil((double) total / safeSize);
+        return new com.cdcplatform.model.PageResult<>(items, total, safePage, safeSize, totalPages);
+    }
+
+    public Map<String, Long> alertCounts() {
+        return jdbc.sql("SELECT COUNT(*) AS total," +
+                        " COALESCE(SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),0) AS open_count," +
+                        " COALESCE(SUM(CASE WHEN status='ACKNOWLEDGED' THEN 1 ELSE 0 END),0) AS acknowledged_count," +
+                        " COALESCE(SUM(CASE WHEN status='RESOLVED' THEN 1 ELSE 0 END),0) AS resolved_count" +
+                        " FROM alert_event").query((rs, row) -> Map.of(
+                        "open", rs.getLong("open_count"),
+                        "acknowledged", rs.getLong("acknowledged_count"),
+                        "resolved", rs.getLong("resolved_count"),
+                        "total", rs.getLong("total"))).single();
+    }
+
+    private AlertEvent readAlert(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
+        return new AlertEvent(rs.getLong("id"), rs.getLong("task_id"),
                 nullableLong(rs, "table_id"), AlertType.valueOf(rs.getString("alert_type")), AlertStatus.valueOf(rs.getString("status")),
                 rs.getString("title"), rs.getString("message"), rs.getObject("created_at", OffsetDateTime.class),
-                rs.getObject("updated_at", OffsetDateTime.class))).list();
+                rs.getObject("updated_at", OffsetDateTime.class));
     }
 
     public void updateAlert(long id, AlertStatus status) {
@@ -407,7 +448,8 @@ public class TaskRepository {
                 SyncMode.valueOf(rs.getString("sync_mode")), DdlPolicy.valueOf(rs.getString("ddl_policy")), rs.getString("time_zone"),
                 TaskStatus.valueOf(rs.getString("status")), rs.getInt("version"), rs.getInt("alert_lag_seconds"),
                 rs.getString("reconciliation_cron"), rs.getInt("reconciliation_delay_minutes"),
-                rs.getInt("reconciliation_window_minutes"), rs.getBoolean("reconcile_after_snapshot"), tables(id),
+                rs.getInt("reconciliation_window_minutes"), rs.getBoolean("reconcile_after_snapshot"),
+                rs.getObject("poll_interval_ms", Integer.class), tables(id),
                 rs.getObject("created_at", OffsetDateTime.class),
                 rs.getObject("updated_at", OffsetDateTime.class));
     }
@@ -460,6 +502,8 @@ public class TaskRepository {
         configs.source(task.sourceId(), false);
         configs.target(task.targetId(), false);
         ZoneId.of(task.timeZone());
+        if (task.pollIntervalMs() != null && (task.pollIntervalMs() < 100 || task.pollIntervalMs() > 3_600_000))
+            throw new IllegalArgumentException("轮询间隔需在 100 到 3600000 毫秒之间");
         if (task.tables() == null || task.tables().isEmpty()) throw new IllegalArgumentException("至少选择一张源表");
         var sources = new HashSet<String>();
         for (var table : task.tables()) {

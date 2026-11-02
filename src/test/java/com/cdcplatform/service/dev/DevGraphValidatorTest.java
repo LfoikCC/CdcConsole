@@ -210,4 +210,84 @@ class DevGraphValidatorTest {
                 new java.util.LinkedHashSet<>(List.of("a", "b", "c")), graph.edges()))
                 .containsExactly("a", "b", "c");
     }
+
+    @Test
+    void joinAcceptsTwoUpstreams() {
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", inputConfig()),
+                        node("b", "DB_INPUT", inputConfig()),
+                        node("j", "OPERATOR", Map.of("operator", "JOIN",
+                                "keys", List.of(Map.of("left", "id", "right", "id")))),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "j"), new DevEdge("b", "j"), new DevEdge("j", "c")));
+
+        assertThat(validator.validate(graph, true).valid()).isTrue();
+    }
+
+    @Test
+    void joinRejectsSingleUpstream() {
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", inputConfig()),
+                        node("j", "OPERATOR", Map.of("operator", "JOIN",
+                                "keys", List.of(Map.of("left", "id", "right", "id")))),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "j"), new DevEdge("j", "c")));
+
+        var report = validator.validate(graph, true);
+
+        assertThat(report.valid()).isFalse();
+        assertThat(report.errors()).anyMatch(i -> i.message().contains("需要两个上游"));
+    }
+
+    @Test
+    void singleInputOperatorStillRejectsSecondUpstream() {
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", inputConfig()),
+                        node("b", "DB_INPUT", inputConfig()),
+                        node("f", "OPERATOR", filterConfig()),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "f"), new DevEdge("b", "f"), new DevEdge("f", "c")));
+
+        var report = validator.validate(graph, true);
+
+        assertThat(report.valid()).isFalse();
+        assertThat(report.errors()).anyMatch(i -> i.message().contains("只接受一条入边"));
+    }
+
+    @Test
+    void sqlOperatorRequiresInputPlaceholder() {
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", inputConfig()),
+                        node("q", "OPERATOR", Map.of("operator", "SQL", "sql", "SELECT * FROM t")),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "q"), new DevEdge("q", "c")));
+
+        var report = validator.validate(graph, true);
+
+        assertThat(report.valid()).isFalse();
+        assertThat(report.errors()).anyMatch(i -> "sql".equals(i.field()) && i.message().contains("{{input}}"));
+    }
+
+    @Test
+    void datasetInputAndOutputAreValidWithoutDatabaseAccounts() {
+        var graph = new DevGraph(
+                List.of(node("d1", "DATASET_INPUT", Map.of("datasetId", 1)),
+                        node("d2", "DATASET_OUTPUT", Map.of("datasetId", 2, "mode", "OVERWRITE"))),
+                List.of(new DevEdge("d1", "d2")));
+
+        assertThat(validator.validate(graph, true).valid()).isTrue();
+    }
+
+    @Test
+    void datasetInputRequiresDatasetId() {
+        var graph = new DevGraph(
+                List.of(node("d1", "DATASET_INPUT", Map.of()),
+                        node("d2", "DATASET_OUTPUT", Map.of("datasetId", 2))),
+                List.of(new DevEdge("d1", "d2")));
+
+        var report = validator.validate(graph, true);
+
+        assertThat(report.valid()).isFalse();
+        assertThat(report.errors()).anyMatch(i -> "datasetId".equals(i.field()));
+    }
 }

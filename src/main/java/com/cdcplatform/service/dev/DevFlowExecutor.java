@@ -21,9 +21,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 数据流执行器：校验 → 建运行记录 → 按拓扑序逐节点执行 → 记录每节点结果 → 清理临时表。
@@ -41,21 +43,34 @@ public class DevFlowExecutor {
     private final DevNodeReader reader;
     private final DevOperatorSql operators;
     private final DevTargetWriter writer;
+    private final DevDatasetReader datasetReader;
     private final DevTempTableStore store;
     private final DevProperties props;
 
     private final ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
     private final Semaphore permits;
+    /** 正在执行的运行 → 取消标志。只存在内存里，进程重启后残留的 RUNNING 由取消接口直接落库。 */
+    private final Map<Long, RunToken> tokens = new ConcurrentHashMap<>();
+
+    private record RunToken(long flowId, AtomicBoolean canceled) {
+    }
+
+    public static class RunCanceledException extends RuntimeException {
+        public RunCanceledException() {
+            super("运行已取消");
+        }
+    }
 
     public DevFlowExecutor(DevFlowRepository flows, ConfigRepository configs, DevGraphValidator validator,
                            DevNodeReader reader, DevOperatorSql operators, DevTargetWriter writer,
-                           DevTempTableStore store, DevProperties props) {
+                           DevDatasetReader datasetReader, DevTempTableStore store, DevProperties props) {
         this.flows = flows;
         this.configs = configs;
         this.validator = validator;
         this.reader = reader;
         this.operators = operators;
         this.writer = writer;
+        this.datasetReader = datasetReader;
         this.store = store;
         this.props = props;
         this.permits = new Semaphore(Math.max(1, props.getMaxConcurrentRuns()));
@@ -77,17 +92,21 @@ public class DevFlowExecutor {
             throw new IllegalArgumentException(detail);
         }
         long runId = flows.startRun(flowId, flow.version(), actor, graph.nodes().size(), flow.graphJson());
+        RunToken token = new RunToken(flowId, new AtomicBoolean(false));
+        tokens.put(runId, token);
         pool.submit(() -> {
             try {
                 permits.acquire();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 flows.finishRun(runId, "CANCELED", 0, "运行被中断", 0, 0);
+                tokens.remove(runId);
                 return;
             }
             try {
-                execute(runId, flowId, graph, report.order());
+                execute(runId, flowId, graph, report.order(), token.canceled());
             } finally {
+                tokens.remove(runId);
                 permits.release();
                 // 每次运行都清一次：临时表是持久 schema，留着会让 cdc.mv.db 一直长
                 try {
@@ -100,7 +119,35 @@ public class DevFlowExecutor {
         return runId;
     }
 
-    private void execute(long runId, long flowId, DevGraph graph, List<String> order) {
+    /** 取消一次运行；返回是否找到了内存中的运行标志。 */
+    public boolean cancel(long flowId, long runId) {
+        var run = flows.run(flowId, runId);
+        if (!"RUNNING".equals(run.status()) && !"PENDING".equals(run.status())) {
+            throw new IllegalStateException("运行已结束，无法取消");
+        }
+        RunToken token = tokens.get(runId);
+        if (token != null) {
+            token.canceled().set(true);
+            return true;
+        }
+        // 进程重启后内存标志已丢失：直接把残留的 RUNNING 落成 CANCELED
+        flows.finishRun(runId, "CANCELED", run.rowsWritten(), "运行已取消", run.nodeSucceeded(), 0);
+        flows.markFlow(flowId, "CANCELED", run.rowsWritten());
+        return false;
+    }
+
+    /** 取消某个数据流下所有在跑的运行（删除数据流前调用）。 */
+    public int cancelFlow(long flowId) {
+        int canceled = 0;
+        for (var entry : tokens.entrySet()) {
+            if (entry.getValue().flowId() == flowId && entry.getValue().canceled().compareAndSet(false, true)) {
+                canceled++;
+            }
+        }
+        return canceled;
+    }
+
+    private void execute(long runId, long flowId, DevGraph graph, List<String> order, AtomicBoolean canceled) {
         long started = System.currentTimeMillis();
         Map<String, DevNode> byId = new HashMap<>();
         graph.nodes().forEach(node -> byId.put(node.id(), node));
@@ -114,15 +161,30 @@ public class DevFlowExecutor {
             if (node == null) {
                 continue;
             }
+            if (canceled.get()) {
+                finishCanceled(runId, flowId, written, succeeded, started);
+                return;
+            }
             long nodeStarted = System.currentTimeMillis();
             long nodeRunId = flows.startNodeRun(runId, node.id(), node.type(), node.displayName());
             try {
-                NodeResult result = runNode(node, graph, outputs, runId);
+                Runnable checkpoint = () -> {
+                    if (canceled.get()) {
+                        throw new RunCanceledException();
+                    }
+                };
+                NodeResult result = runNode(node, graph, outputs, runId, checkpoint);
                 outputs.put(node.id(), result.read());
                 written += result.written();
                 succeeded++;
                 flows.finishNodeRun(nodeRunId, "SUCCEEDED", result.read().rows(), result.written(),
                         result.note(), System.currentTimeMillis() - nodeStarted);
+            } catch (RunCanceledException e) {
+                flows.finishNodeRun(nodeRunId, "CANCELED", 0, 0, "运行已取消",
+                        System.currentTimeMillis() - nodeStarted);
+                finishCanceled(runId, flowId, written, succeeded, started);
+                log.info("数据流 {} 的运行 {} 已取消", flowId, runId);
+                return;
             } catch (Exception e) {
                 String message = rootMessage(e);
                 flows.finishNodeRun(nodeRunId, "FAILED", 0, 0, message, System.currentTimeMillis() - nodeStarted);
@@ -137,10 +199,56 @@ public class DevFlowExecutor {
         flows.markFlow(flowId, "SUCCEEDED", written);
     }
 
+    private void finishCanceled(long runId, long flowId, long written, int succeeded, long started) {
+        flows.finishRun(runId, "CANCELED", written, "运行已取消", succeeded, System.currentTimeMillis() - started);
+        flows.markFlow(flowId, "CANCELED", written);
+    }
+
     private record NodeResult(ReadResult read, long written, String note) {
     }
 
-    private NodeResult runNode(DevNode node, DevGraph graph, Map<String, ReadResult> outputs, long scope) {
+    /**
+     * 算子节点：按连线顺序取上游（双输入算子先连的为左、后连的为右）。
+     *
+     * <p>SQL 算子的输出列只能执行后从结果集元数据读，所以单独走 {@link DevTempTableStore#runSql}，
+     * 不做静态列推导。
+     */
+    private NodeResult runOperator(DevNode node, DevGraph graph, Map<String, ReadResult> outputs,
+                                   long scope, int maxRows) {
+        Map<String, Object> config = node.configOrEmpty();
+        List<ReadResult> ups = upstreams(node, graph, outputs);
+        ReadResult left = ups.get(0);
+        ReadResult right = ups.size() > 1 ? ups.get(1) : null;
+        String target = store.tableName(scope, node.id());
+        store.drop(target);
+
+        String operator = text(config.get("operator"));
+        if ("SQL".equalsIgnoreCase(operator)) {
+            String sql = text(config.get("sql"));
+            if (sql == null) {
+                throw new IllegalArgumentException("SQL 算子没有填写 SQL");
+            }
+            // 用视图把物理列名 C1..Cn 映射回业务列名，用户才能写 SELECT id 而不是 SELECT "C1"
+            String view = target + "_V";
+            store.createView(view, left.table(), left.columns());
+            try {
+                var result = store.runSql(target, sql.replace("{{input}}", view), maxRows, left.columns());
+                return new NodeResult(new ReadResult(result.table(), result.rows(), result.columns()), 0, null);
+            } finally {
+                store.dropView(view);
+            }
+        }
+
+        var plan = operators.plan(operator, config,
+                new DevOperatorSql.Input(left.table(), left.columns()),
+                right == null ? null : new DevOperatorSql.Input(right.table(), right.columns()));
+        store.create(target, plan.columns());
+        long rows = store.materialize(target, plan.columns(), plan.selectSql(), plan.params());
+        return new NodeResult(new ReadResult(target, rows, plan.columns()), 0, null);
+    }
+
+    private NodeResult runNode(DevNode node, DevGraph graph, Map<String, ReadResult> outputs, long scope,
+                               Runnable checkpoint) {
         Map<String, Object> config = node.configOrEmpty();
         return switch (String.valueOf(node.type())) {
             case DevGraphValidator.TYPE_DB_INPUT -> {
@@ -158,15 +266,7 @@ public class DevFlowExecutor {
                         text(config.get("sql")), scope, node.id(), props.getMaxRowsPerNode());
                 yield new NodeResult(result, 0, null);
             }
-            case DevGraphValidator.TYPE_OPERATOR -> {
-                ReadResult upstream = upstream(node, graph, outputs);
-                String target = store.tableName(scope, node.id());
-                store.drop(target);
-                var plan = operators.plan(text(config.get("operator")), config, upstream.table(), upstream.columns());
-                store.create(target, plan.columns());
-                long rows = store.materialize(target, plan.columns(), plan.selectSql(), plan.params());
-                yield new NodeResult(new ReadResult(target, rows, plan.columns()), 0, null);
-            }
+            case DevGraphValidator.TYPE_OPERATOR -> runOperator(node, graph, outputs, scope, props.getMaxRowsPerNode());
             case DevGraphValidator.TYPE_DB_OUTPUT -> {
                 ReadResult upstream = upstream(node, graph, outputs);
                 TargetConfig target = target(requiredId(config, "targetId", node));
@@ -179,9 +279,20 @@ public class DevFlowExecutor {
                 List<String> targetColumns = stringList(config.get("targetColumns"));
                 List<String> keys = stringList(config.get("keyColumns"));
                 var result = writer.write(target, table, mode, upstream.columns(), upstream.table(),
-                        targetColumns, keys);
+                        targetColumns, keys, checkpoint);
                 yield new NodeResult(upstream, result.written(),
                         "写入 " + table + "：" + result.written() + " 行");
+            }
+            case DevGraphValidator.TYPE_DATASET_INPUT -> {
+                long datasetId = requiredId(config, "datasetId", node);
+                ReadResult result = datasetReader.read(datasetId, scope, node.id(), props.getMaxRowsPerNode());
+                yield new NodeResult(result, 0, null);
+            }
+            case DevGraphValidator.TYPE_DATASET_OUTPUT -> {
+                long datasetId = requiredId(config, "datasetId", node);
+                ReadResult upstream = upstream(node, graph, outputs);
+                long rows = datasetReader.write(datasetId, text(config.getOrDefault("mode", "OVERWRITE")), upstream);
+                yield new NodeResult(upstream, rows, "写入数据集：" + rows + " 行");
             }
             default -> throw new IllegalArgumentException("未知节点类型：" + node.type());
         };
@@ -192,6 +303,8 @@ public class DevFlowExecutor {
     /** 预览某个节点：只跑它的祖先子图，输入节点最多扫 previewScanRows 行。 */
     public PreviewResult preview(long flowId, String nodeKey, int limit) {
         long started = System.currentTimeMillis();
+        // 预览固定最多 100 行：够看清数据形态，又不至于把大宽表整页渲染到抽屉里
+        int safeLimit = Math.max(1, Math.min(limit, 100));
         DevFlow flow = flows.flow(flowId);
         DevGraph graph = flows.parseGraph(flow.graphJson());
         DevNode target = graph.nodes().stream()
@@ -221,7 +334,8 @@ public class DevFlowExecutor {
                 if (node == null) {
                     continue;
                 }
-                if (DevGraphValidator.TYPE_DB_OUTPUT.equals(node.type())) {
+                if (DevGraphValidator.TYPE_DB_OUTPUT.equals(node.type())
+                        || DevGraphValidator.TYPE_DATASET_OUTPUT.equals(node.type())) {
                     // 输出节点在预览里绝不落库：预览必须是只读的
                     continue;
                 }
@@ -230,13 +344,17 @@ public class DevFlowExecutor {
                 created.add(result.read().table());
             }
 
-            if (DevGraphValidator.TYPE_DB_OUTPUT.equals(target.type())) {
+            if (DevGraphValidator.TYPE_DB_OUTPUT.equals(target.type())
+                    || DevGraphValidator.TYPE_DATASET_OUTPUT.equals(target.type())) {
                 ReadResult upstream = outputs.get(upstreamId(target, graph));
                 if (upstream == null) {
                     throw new IllegalArgumentException("输出节点没有可预览的上游数据");
                 }
-                var rows = store.preview(upstream.table(), Math.max(1, limit));
-                String note = "输出节点预览不会写入目标库；目标：" + text(target.configOrEmpty().get("table"))
+                var rows = store.preview(upstream.table(), safeLimit);
+                String note = DevGraphValidator.TYPE_DATASET_OUTPUT.equals(target.type())
+                        ? "数据集输出预览不会写入数据集；数据集 ID：" + text(target.configOrEmpty().get("datasetId"))
+                        + "，模式：" + text(target.configOrEmpty().getOrDefault("mode", "OVERWRITE"))
+                        : "输出节点预览不会写入目标库；目标：" + text(target.configOrEmpty().get("table"))
                         + "，模式：" + text(target.configOrEmpty().getOrDefault("mode", "APPEND"));
                 return new PreviewResult(rows.columns(), rows.rows(), rows.truncated(),
                         System.currentTimeMillis() - started, upstream.rows(), note);
@@ -246,7 +364,7 @@ public class DevFlowExecutor {
             if (self == null) {
                 throw new IllegalArgumentException("节点 " + nodeKey + " 没有产出");
             }
-            var rows = store.preview(self.table(), Math.max(1, limit));
+            var rows = store.preview(self.table(), safeLimit);
             return new PreviewResult(rows.columns(), rows.rows(), rows.truncated(),
                     System.currentTimeMillis() - started, self.rows(), null);
         } finally {
@@ -269,14 +387,10 @@ public class DevFlowExecutor {
                 yield new NodeResult(reader.readSql(source, text(config.get("database")),
                         text(config.get("sql")), scope, node.id(), scan), 0, null);
             }
-            case DevGraphValidator.TYPE_OPERATOR -> {
-                ReadResult upstream = upstream(node, graph, outputs);
-                String target = store.tableName(scope, node.id());
-                store.drop(target);
-                var plan = operators.plan(text(config.get("operator")), config, upstream.table(), upstream.columns());
-                store.create(target, plan.columns());
-                long rows = store.materialize(target, plan.columns(), plan.selectSql(), plan.params());
-                yield new NodeResult(new ReadResult(target, rows, plan.columns()), 0, null);
+            case DevGraphValidator.TYPE_OPERATOR -> runOperator(node, graph, outputs, scope, scan);
+            case DevGraphValidator.TYPE_DATASET_INPUT -> {
+                long datasetId = requiredId(config, "datasetId", node);
+                yield new NodeResult(datasetReader.read(datasetId, scope, node.id(), scan), 0, null);
             }
             default -> new NodeResult(new ReadResult(store.tableName(scope, node.id()), 0, List.of()), 0, null);
         };
@@ -318,12 +432,27 @@ public class DevFlowExecutor {
     }
 
     private ReadResult upstream(DevNode node, DevGraph graph, Map<String, ReadResult> outputs) {
-        String id = upstreamId(node, graph);
-        ReadResult result = outputs.get(id);
-        if (result == null) {
-            throw new IllegalStateException("节点 " + node.id() + " 的上游 " + id + " 还没有产出");
+        return upstreams(node, graph, outputs).get(0);
+    }
+
+    /** 按 {@code graph.edges()} 的顺序返回全部上游产出；双输入算子靠这个顺序区分左、右。 */
+    private List<ReadResult> upstreams(DevNode node, DevGraph graph, Map<String, ReadResult> outputs) {
+        List<String> ids = graph.edges().stream()
+                .filter(edge -> node.id().equals(edge.to()))
+                .map(edge -> edge.from())
+                .toList();
+        if (ids.isEmpty()) {
+            throw new IllegalArgumentException("节点 " + node.id() + " 没有上游");
         }
-        return result;
+        List<ReadResult> results = new ArrayList<>();
+        for (String id : ids) {
+            ReadResult result = outputs.get(id);
+            if (result == null) {
+                throw new IllegalStateException("节点 " + node.id() + " 的上游 " + id + " 还没有产出");
+            }
+            results.add(result);
+        }
+        return results;
     }
 
     // ------------------------------------------------------------- helpers

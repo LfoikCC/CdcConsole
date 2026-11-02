@@ -17,6 +17,10 @@ spring:
     baseline-version: 1
   jackson:
     default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
 cdc:
   audit:
     retention-days: ${CDC_AUDIT_RETENTION_DAYS:180}
@@ -51,6 +55,12 @@ cdc:
     preview-rows: ${CDC_DEV_PREVIEW_ROWS:200}
     max-concurrent-runs: ${CDC_DEV_MAX_CONCURRENT_RUNS:2}
     temp-schema: ${CDC_DEV_TEMP_SCHEMA:DEV_TMP}
+  dataset:
+    directory: ${CDC_DATA_DIR:./data}/datasets
+    storage-schema: ${CDC_DATASET_SCHEMA:DATASET_STORE}
+    max-rows: ${CDC_DATASET_MAX_ROWS:100000}
+    max-columns: ${CDC_DATASET_MAX_COLUMNS:200}
+    max-sheets: ${CDC_DATASET_MAX_SHEETS:20}
 logging:
   level:
     com.cdcplatform: INFO

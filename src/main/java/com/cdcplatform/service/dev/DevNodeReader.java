@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -46,6 +47,90 @@ public class DevNodeReader {
     }
 
     public record ReadResult(String table, long rows, List<ColumnMeta> columns) {
+    }
+
+    /** 数据集预览：只读、不落临时表。 */
+    public record PreviewData(List<String> columns, List<List<Object>> rows, boolean truncated) {
+    }
+
+    /** 只取字段，不读数据：数据集创建/刷新字段用。 */
+    public List<ColumnMeta> describeTable(SourceConfig source, String database, String table) {
+        String sql = "SELECT * FROM " + qualified(source.dbType(), blankToNull(database), table) + " WHERE 1=0";
+        return describe(source, database, sql);
+    }
+
+    public List<ColumnMeta> describeSql(SourceConfig source, String database, String sql) {
+        String cleaned = stripComments(sql);
+        if (!LEADING_KEYWORD.matcher(cleaned).find()) {
+            throw new IllegalArgumentException("数据集 SQL 只支持 SELECT 或 WITH 查询");
+        }
+        if (hasMultipleStatements(cleaned)) {
+            throw new IllegalArgumentException("数据集 SQL 只能包含一条查询语句");
+        }
+        return describe(source, database, "SELECT * FROM (" + cleaned + ") x WHERE 1=0");
+    }
+
+    public PreviewData previewTable(SourceConfig source, String database, String table, int limit) {
+        String sql = "SELECT * FROM " + qualified(source.dbType(), blankToNull(database), table);
+        return preview(source, database, sql, limit);
+    }
+
+    public PreviewData previewSql(SourceConfig source, String database, String sql, int limit) {
+        String cleaned = stripComments(sql);
+        if (!LEADING_KEYWORD.matcher(cleaned).find() || hasMultipleStatements(cleaned)) {
+            throw new IllegalArgumentException("数据集 SQL 只支持单条 SELECT 或 WITH 查询");
+        }
+        return preview(source, database, cleaned, limit);
+    }
+
+    private List<ColumnMeta> describe(SourceConfig source, String database, String sql) {
+        try (Connection connection = open(source, database);
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rs = statement.executeQuery()) {
+            return columnsOf(rs.getMetaData());
+        } catch (SQLException e) {
+            throw new IllegalStateException("读取字段失败：" + e.getMessage(), e);
+        }
+    }
+
+    private PreviewData preview(SourceConfig source, String database, String sql, int limit) {
+        int safe = Math.max(1, Math.min(limit, 500));
+        try (Connection connection = open(source, database);
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setMaxRows(safe + 1);
+            statement.setFetchSize(Math.min(1000, safe + 1));
+            try (ResultSet rs = statement.executeQuery()) {
+                ResultSetMetaData meta = rs.getMetaData();
+                List<String> columns = new ArrayList<>();
+                for (int i = 1; i <= meta.getColumnCount(); i++) {
+                    columns.add(meta.getColumnLabel(i));
+                }
+                List<List<Object>> rows = new ArrayList<>();
+                boolean truncated = false;
+                while (rs.next()) {
+                    if (rows.size() >= safe) {
+                        truncated = true;
+                        break;
+                    }
+                    List<Object> row = new ArrayList<>(columns.size());
+                    for (int i = 1; i <= columns.size(); i++) {
+                        row.add(rs.getObject(i));
+                    }
+                    rows.add(row);
+                }
+                return new PreviewData(columns, rows, truncated);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("预览数据集失败：" + e.getMessage(), e);
+        }
+    }
+
+    private Connection open(SourceConfig source, String database) throws SQLException {
+        Connection connection = DriverManager.getConnection(
+                withTimeouts(probe.streamingUrl(source, database), source.dbType()),
+                source.username(), source.password());
+        connection.setReadOnly(true);
+        return connection;
     }
 
     /** 读取源表。{@code columns} 为空表示全列；{@code where} 可为空。 */

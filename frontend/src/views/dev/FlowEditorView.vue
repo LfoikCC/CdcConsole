@@ -1,13 +1,13 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Play, Save, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, Play, Save, Search, ShieldCheck } from 'lucide-vue-next'
 import { api } from '../../api'
 import { CdcMessage, CdcMessageBox } from '../../components/ui/feedback'
 import FlowCanvas from '../../components/dev/FlowCanvas.vue'
 import NodeDrawer from '../../components/dev/NodeDrawer.vue'
 import { createNode, PALETTE_GROUPS } from '../../components/dev/nodeTypes'
-import { nextNodeId, upstreamOf } from '../../components/dev/flowGraph'
+import { nextNodeId, upstreamNodesOf } from '../../components/dev/flowGraph'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +20,7 @@ const selectedId = ref(null)
 const drawerOpen = ref(false)
 const preview = ref(null)
 const upstreamColumns = ref([])
+const secondUpstreamColumns = ref([])
 const busy = ref(false)
 const saving = ref(false)
 const loading = ref(false)
@@ -27,6 +28,21 @@ const snapshot = ref('')
 const canvas = ref(null)
 const sources = ref([])
 const targets = ref([])
+const datasets = ref([])
+const paletteQuery = ref('')
+
+const paletteGroups = computed(() => {
+  const query = paletteQuery.value.trim().toLowerCase()
+  if (!query) return PALETTE_GROUPS
+  return PALETTE_GROUPS
+    .map(group => ({
+      label: group.label,
+      items: group.items.filter(item =>
+        item.label.toLowerCase().includes(query) ||
+        (item.operator || '').toLowerCase().includes(query))
+    }))
+    .filter(group => group.items.length)
+})
 
 const selectedNode = computed(() => graph.value.nodes.find(node => node.id === selectedId.value) || null)
 const dirty = computed(() => JSON.stringify(graph.value) !== snapshot.value)
@@ -37,11 +53,20 @@ function serialize(value) {
   return JSON.stringify(value)
 }
 
+async function reloadDatasets() {
+  try {
+    datasets.value = await api('/datasets?size=500').then(body => body.items || [])
+  } catch (e) {
+    CdcMessage.error(e.message)
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     sources.value = await api('/sources').then(body => body.items || [])
     targets.value = await api('/targets').then(body => body.items || [])
+    datasets.value = await api('/datasets?size=500').then(body => body.items || [])
     if (flowId.value) {
       const flow = await api(`/flows/${flowId.value}`)
       name.value = flow.name
@@ -72,6 +97,7 @@ function addNode(type, operator) {
   drawerOpen.value = true
   preview.value = null
   upstreamColumns.value = []
+  secondUpstreamColumns.value = []
   nextTick(() => canvas.value?.fit())
 }
 
@@ -81,6 +107,7 @@ function deselect() {
   drawerOpen.value = false
   preview.value = null
   upstreamColumns.value = []
+  secondUpstreamColumns.value = []
 }
 
 function onNodeMove({ id, x, y }) {
@@ -113,6 +140,7 @@ function openDrawer(id) {
   drawerOpen.value = true
   preview.value = null
   upstreamColumns.value = []
+  secondUpstreamColumns.value = []
   const node = graph.value.nodes.find(item => item.id === id)
   if (node?.type === 'OPERATOR') {
     loadUpstreamColumns(node)
@@ -120,17 +148,20 @@ function openDrawer(id) {
 }
 
 async function loadUpstreamColumns(node) {
-  const upstream = upstreamOf(graph.value, node.id)
-  if (!upstream) return
+  // 双输入算子按连线顺序取两个上游；单输入只会有一个
+  const upstreams = upstreamNodesOf(graph.value, node.id)
+  if (!upstreams.length) return
   try {
     const id = await ensureSaved()
-    const result = await api(`/flows/${id}/nodes/${upstream.id}/preview`, {
+    const results = await Promise.all(upstreams.map(upstream => api(`/flows/${id}/nodes/${upstream.id}/preview`, {
       method: 'POST',
       body: JSON.stringify({ limit: 1 })
-    })
-    upstreamColumns.value = (result.columns || []).map(label => ({ label }))
+    })))
+    upstreamColumns.value = (results[0]?.columns || []).map(label => ({ label }))
+    secondUpstreamColumns.value = (results[1]?.columns || []).map(label => ({ label }))
   } catch (e) {
     upstreamColumns.value = []
+    secondUpstreamColumns.value = []
   }
 }
 
@@ -156,7 +187,9 @@ async function save() {
     } else {
       const created = await api('/flows', { method: 'POST', body })
       flowId.value = created.id
-      router.replace(`/dev/flows/${created.id}/edit`)
+      // 用 history 换地址而不是 router.replace：后者会触发 RouterView 重挂，
+      // 抽屉和预览结果会一起丢掉，表现就是「点预览没反应」
+      window.history.replaceState(window.history.state, '', `/dev/flows/${created.id}/edit`)
     }
     snapshot.value = serialize(graph.value)
     CdcMessage.success('数据流已保存')
@@ -174,21 +207,37 @@ async function ensureSaved() {
   return flowId.value
 }
 
-async function runPreview() {
-  if (!selectedNode.value) return
+async function runPreview(draft) {
+  const node = selectedNode.value
+  if (!node) return
+  // 预览要用抽屉里当前编辑的值，而不是上一次「应用」后的旧配置
+  if (draft?.config) {
+    node.config = draft.config
+    if (draft.name) node.name = draft.name
+  }
   busy.value = true
   preview.value = null
   try {
     const id = await ensureSaved()
-    preview.value = await api(`/flows/${id}/nodes/${selectedNode.value.id}/preview`, {
+    preview.value = await api(`/flows/${id}/nodes/${node.id}/preview`, {
       method: 'POST',
-      body: JSON.stringify({ limit: 200 })
+      body: JSON.stringify({ limit: 100 })
     })
   } catch (e) {
     CdcMessage.error(e.message)
   } finally {
     busy.value = false
   }
+}
+
+async function deleteSelected() {
+  if (!selectedNode.value) return
+  try {
+    await CdcMessageBox.confirm('删除后该节点及其连线会一并移除。', '删除节点', { type: 'warning' })
+  } catch {
+    return
+  }
+  deleteNode(selectedNode.value.id)
 }
 
 async function validate() {
@@ -251,21 +300,24 @@ onMounted(load)
 
     <div class="flow-editor-body">
       <aside class="flow-palette" aria-label="节点面板">
-        <template v-for="group in PALETTE_GROUPS" :key="group.label">
-          <div class="palette-group">{{ group.label }}</div>
-          <button v-for="option in group.items" :key="option.operator || option.type" class="palette-item"
-                  @click="addNode(option.type, option.operator)">
-            <span class="palette-icon" :class="`tone-${option.tone}`">
-              <component :is="option.icon" :size="14"/>
-            </span>
-            {{ option.label }}
-          </button>
-        </template>
-        <div v-if="selectedId" class="palette-actions">
-          <button class="btn btn-ghost btn-sm danger-text" @click="deleteNode(selectedId)">
-            <Trash2 :size="13"/>删除选中节点
-          </button>
+        <div class="palette-search">
+          <Search :size="14" aria-hidden="true"/>
+          <input v-model="paletteQuery" type="search" placeholder="搜索操作" aria-label="搜索操作"/>
         </div>
+        <template v-for="group in paletteGroups" :key="group.label">
+          <div class="palette-group">{{ group.label }}</div>
+          <div class="palette-grid">
+            <button v-for="option in group.items" :key="option.operator || option.type" class="palette-item"
+                    :title="option.label" :aria-label="option.label"
+                    @click="addNode(option.type, option.operator)">
+              <span class="palette-icon" :class="`tone-${option.tone}`">
+                <component :is="option.icon" :size="22"/>
+              </span>
+              <span class="palette-label">{{ option.label }}</span>
+            </button>
+          </div>
+        </template>
+        <div v-if="!paletteGroups.length" class="palette-empty">没有匹配的算子</div>
       </aside>
 
       <div class="flow-stage">
@@ -274,9 +326,11 @@ onMounted(load)
                     @open="openDrawer" @connect="onConnect" @delete-node="deleteNode"
                     @deselect="deselect"/>
         <NodeDrawer v-if="drawerOpen && selectedNode" :node="selectedNode"
-                    :sources="sources" :targets="targets"
-                    :upstream-columns="upstreamColumns" :preview="preview" :busy="busy"
-                    @apply="applyConfig" @preview="runPreview"
+                    :sources="sources" :targets="targets" :datasets="datasets"
+                    :upstream-columns="upstreamColumns" :second-upstream-columns="secondUpstreamColumns"
+                    :preview="preview" :busy="busy"
+                    @apply="applyConfig" @preview="runPreview" @delete="deleteSelected"
+                    @dataset-created="reloadDatasets"
                     @need-upstream="loadUpstreamColumns(selectedNode)"
                     @close="drawerOpen = false"/>
       </div>

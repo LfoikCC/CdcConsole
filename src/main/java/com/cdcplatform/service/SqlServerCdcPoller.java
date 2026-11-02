@@ -73,7 +73,9 @@ public class SqlServerCdcPoller {
                     continue;
                 }
                 if (now < nextPollAt.getOrDefault(mapping.id(), 0L)) continue;
-                nextPollAt.put(mapping.id(), now + source.pollIntervalMs());
+                Integer taskInterval = tasks.pollIntervalMsForMapping(mapping.id());
+                int interval = Math.max(100, taskInterval != null ? taskInterval : source.pollIntervalMs());
+                nextPollAt.put(mapping.id(), now + interval);
                 if (source.dbType() == Types.DatabaseType.SQLSERVER) pollSqlServer(mapping, source);
                 else {
                     long groupId = captureGroups.ensureForMapping(mapping.id());

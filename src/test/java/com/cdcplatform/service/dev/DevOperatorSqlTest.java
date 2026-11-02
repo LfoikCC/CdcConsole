@@ -154,7 +154,7 @@ class DevOperatorSqlTest {
 
     @Test
     void unknownOperatorIsRejected() {
-        assertThatThrownBy(() -> operators.plan("JOIN", Map.of(), UP, UPSTREAM))
+        assertThatThrownBy(() -> operators.plan("LOOKUP", Map.of(), UP, UPSTREAM))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不支持的算子");
     }
@@ -342,5 +342,119 @@ class DevOperatorSqlTest {
                 "columns", List.of("id"), "alias", "x"), UP, UPSTREAM))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("至少需要两个字段");
+    }
+
+    // ------------------------------------------------------------- UNION / JOIN
+
+    private static final List<ColumnMeta> RIGHT = List.of(
+            new ColumnMeta(1, "id", "BIGINT"),
+            new ColumnMeta(2, "city", "VARCHAR"),
+            new ColumnMeta(3, "note", "VARCHAR"));
+    private static final String RIGHT_TABLE = "\"DEV_TMP\".\"T_1_n2_def\"";
+
+    private DevOperatorSql.Input left() {
+        return new DevOperatorSql.Input(UP, UPSTREAM);
+    }
+
+    private DevOperatorSql.Input right() {
+        return new DevOperatorSql.Input(RIGHT_TABLE, RIGHT);
+    }
+
+    @Test
+    void unionAllKeepsLeftLabelsAndUnionsByPosition() {
+        var plan = operators.plan("UNION", Map.of("mode", "ALL"), left(), right());
+
+        assertThat(plan.columns()).extracting(ColumnMeta::label).containsExactly("id", "amount", "status");
+        assertThat(plan.selectSql()).contains("UNION ALL")
+                .contains("SELECT 1 AS \"SRC\", \"ORD\", \"C1\", \"C2\", \"C3\" FROM " + UP)
+                .contains("FROM " + RIGHT_TABLE);
+        assertThat(plan.params()).isEmpty();
+    }
+
+    @Test
+    void unionDistinctGroupsByAllColumns() {
+        var plan = operators.plan("UNION", Map.of("mode", "DISTINCT"), left(), right());
+
+        assertThat(plan.selectSql()).contains("GROUP BY u.\"C1\", u.\"C2\", u.\"C3\"");
+    }
+
+    @Test
+    void unionRejectsMismatchedColumnCounts() {
+        var narrow = new DevOperatorSql.Input(RIGHT_TABLE, List.of(
+                new ColumnMeta(1, "id", "BIGINT"),
+                new ColumnMeta(2, "city", "VARCHAR")));
+
+        assertThatThrownBy(() -> operators.plan("UNION", Map.of(), left(), narrow))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("列数一致");
+    }
+
+    @Test
+    void joinKeepsLeftAndDropsRightKeyColumns() {
+        var plan = operators.plan("JOIN", Map.of(
+                "joinType", "LEFT",
+                "keys", List.of(Map.of("left", "id", "right", "id"))), left(), right());
+
+        assertThat(plan.columns()).extracting(ColumnMeta::label)
+                .containsExactly("id", "amount", "status", "city", "note");
+        assertThat(plan.selectSql())
+                .contains("LEFT JOIN")
+                .contains("ON l.\"C1\" = r.\"C1\"");
+    }
+
+    @Test
+    void joinRenamesDuplicateRightLabels() {
+        var duplicate = new DevOperatorSql.Input(RIGHT_TABLE, List.of(
+                new ColumnMeta(1, "id", "BIGINT"),
+                new ColumnMeta(2, "amount", "DECIMAL(38,10)")));
+        var plan = operators.plan("JOIN", Map.of(
+                "keys", List.of(Map.of("left", "id", "right", "id"))), left(), duplicate);
+
+        assertThat(plan.columns()).extracting(ColumnMeta::label)
+                .containsExactly("id", "amount", "status", "amount_右");
+    }
+
+    @Test
+    void joinRequiresKeys() {
+        assertThatThrownBy(() -> operators.plan("JOIN", Map.of(), left(), right()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("关联键");
+    }
+
+    // ------------------------------------------------------- PIVOT / UNPIVOT
+
+    @Test
+    void pivotBuildsOneColumnPerValue() {
+        var plan = operators.plan("PIVOT", Map.of(
+                "pivotColumn", "status",
+                "valueColumn", "amount",
+                "aggregate", "SUM",
+                "values", List.of("paid", "unpaid")), left(), null);
+
+        assertThat(plan.columns()).extracting(ColumnMeta::label).containsExactly("paid", "unpaid");
+        assertThat(plan.selectSql()).contains("SUM(CASE WHEN up.\"C3\" = ? THEN up.\"C2\" END)");
+        assertThat(plan.params()).containsExactly("paid", "unpaid");
+    }
+
+    @Test
+    void pivotRejectsEmptyValueList() {
+        assertThatThrownBy(() -> operators.plan("PIVOT", Map.of(
+                "pivotColumn", "status", "valueColumn", "amount"), left(), null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("至少需要一个列值");
+    }
+
+    @Test
+    void unpivotExpandsSelectedColumns() {
+        var plan = operators.plan("UNPIVOT", Map.of(
+                "columns", List.of("amount", "status"),
+                "nameColumn", "指标",
+                "valueColumn", "数值"), left(), null);
+
+        assertThat(plan.columns()).extracting(ColumnMeta::label).containsExactly("id", "指标", "数值");
+        assertThat(plan.selectSql()).contains("UNION ALL")
+                .contains("CAST(up.\"C2\" AS VARCHAR)")
+                .contains("CAST(up.\"C3\" AS VARCHAR)");
+        assertThat(plan.params()).containsExactly("amount", "status");
     }
 }

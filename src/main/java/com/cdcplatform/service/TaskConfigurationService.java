@@ -93,6 +93,10 @@ public class TaskConfigurationService {
         var target = configs.target(input.targetId(), true);
         if (!source.enabled()) errors.add("源连接已停用");
         if (!target.enabled()) errors.add("目标连接已停用");
+        boolean targetDatabaseMissing = target.targetType() != TargetType.KAFKA
+                && (target.config() == null || target.config().get("database") == null
+                || target.config().get("database").toString().isBlank());
+        if (targetDatabaseMissing) errors.add("目标连接未配置数据库，请先在账户中填写默认数据库");
         Map<String, List<Map<String, Object>>> sourceTables = new HashMap<>();
         Map<String, Map<String, Object>> targetTables = new HashMap<>();
         Set<String> topics = new HashSet<>();
@@ -104,15 +108,22 @@ public class TaskConfigurationService {
             for (String database : input.tables().stream().map(SyncTaskTable::sourceDatabase).distinct().toList())
                 sourceTables.put(database, connections.tables(source, database));
             if (target.targetType() == TargetType.KAFKA) topics.addAll(connections.topics(target));
-            else
+            else if (!targetDatabaseMissing)
                 for (var table : connections.tables(target)) targetTables.put(tableKey(table), table);
         } catch (Exception e) { errors.add(rootMessage(e)); }
 
         var preparedTables = new ArrayList<SyncTaskTable>();
         var selectedTargets = new HashSet<String>();
+        String targetDatabase = target.config() == null ? null : Objects.toString(target.config().get("database"), null);
         for (var table : input.tables()) {
             var tableErrors = new ArrayList<String>();
             var tableWarnings = new ArrayList<String>();
+            if (Objects.equals(input.sourceId(), input.targetId())
+                    && table.targetSchema() == null && targetDatabase != null
+                    && table.sourceDatabase() != null && table.sourceDatabase().equalsIgnoreCase(targetDatabase)
+                    && table.sourceTable().equalsIgnoreCase(table.targetTable())) {
+                tableErrors.add("源表和目标表不能是同一张表，否则会形成写入回环");
+            }
             Map<String, Object> sourceMeta = findTable(sourceTables.getOrDefault(table.sourceDatabase(), List.of()), table.sourceSchema(), table.sourceTable());
             Map<String, Object> targetMeta = target.targetType() == TargetType.KAFKA ? null : targetTables.get(key(table.targetSchema(), table.targetTable()));
             List<String> keys = table.keyColumns();
@@ -177,7 +188,7 @@ public class TaskConfigurationService {
         return new SyncTask(task.id(), task.name(), task.description(), task.sourceId(), task.targetId(), task.syncMode(),
                 task.ddlPolicy(), task.timeZone(), task.status(), task.version(), task.alertLagSeconds(),
                 task.reconciliationCron(), task.reconciliationDelayMinutes(), task.reconciliationWindowMinutes(),
-                task.reconcileAfterSnapshot(), tables, task.createdAt(), task.updatedAt());
+                task.reconcileAfterSnapshot(), task.pollIntervalMs(), tables, task.createdAt(), task.updatedAt());
     }
 
     private SyncTaskTable copy(SyncTaskTable table, List<String> keys, String fingerprint) {

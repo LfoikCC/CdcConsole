@@ -46,7 +46,7 @@ public class BackendSecurityConfiguration {
   if(p.startsWith("/api/users")||p.startsWith("/api/mail")||p.equals("/api/settings"))return true;
   if(m.equals("GET"))return false;
   if(p.equals("/api/auth/password")||p.equals("/api/auth/logout")||p.equals("/api/auth/login"))return false;
-  return !p.matches("/api/tasks/\\d+/actions/(start|pause|resume|stop)")&&!p.matches("/api/(sources|targets)/\\d+/probe")
+  return !p.matches("/api/tasks/\\d+/actions/(start|pause|resume|stop)")&&!p.matches("/api/(sources|targets|accounts)/\\d+/probe")
    &&!p.matches("/api/alerts/\\d+/(acknowledge|resolve)")&&!p.matches("/api/tasks/\\d+/delivery-batches/[^/]+/retry")
    &&!p.matches("/api/tasks/\\d+/(subscriptions/\\d+/)?reconciliations")
    &&!p.matches("/api/tasks/\\d+/subscriptions/\\d+/actions/(pause|resume|retry-initialization)")
@@ -54,6 +54,7 @@ public class BackendSecurityConfiguration {
    &&!p.matches("/api/subscriptions/\\d+/(actions/(pause|resume)|delivery-batches/[^/]+/retry)")
    // 数据开发：运行与预览对 OPERATOR 开放（与 /api/tasks 的启停一致），增删改仍限 ADMIN
    &&!p.matches("/api/flows/\\d+/runs")
+   &&!p.matches("/api/flows/\\d+/runs/\\d+/cancel")
    &&!p.matches("/api/flows/\\d+/nodes/[^/]+/preview")
    &&!p.matches("/api/flows/validate");
  }

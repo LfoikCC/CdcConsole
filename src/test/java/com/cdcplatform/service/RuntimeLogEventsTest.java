@@ -19,9 +19,9 @@ class RuntimeLogEventsTest {
     @MockitoSpyBean RuntimeEventService events;
 
     @Test void logNotificationIsSentAfterCommitAndNeverAfterRollback() {
-        jdbc.sql("INSERT INTO cdc_source(id,name,db_type,host,port,database_name,username,password) VALUES(99001,'source','MYSQL','localhost',3306,'db','u','')").update();
-        jdbc.sql("INSERT INTO cdc_target(id,name,target_type,config_json) VALUES(99001,'target','MYSQL','{}')").update();
-        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode,status) VALUES(99001,'test',99001,99001,'INCREMENTAL_ONLY','DRAFT')").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(99001,'source','MYSQL','localhost',3306,'db','u','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(99002,'target','MYSQL','localhost',3306,'db','u','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode,status) VALUES(99001,'test',99001,99002,'INCREMENTAL_ONLY','DRAFT')").update();
         clearInvocations(events);
         var tx=new TransactionTemplate(transactions);
         tx.executeWithoutResult(status->{tasks.addLog(99001,null,"INFO","commit");verify(events,never()).publish(eq("task-log"),any());});

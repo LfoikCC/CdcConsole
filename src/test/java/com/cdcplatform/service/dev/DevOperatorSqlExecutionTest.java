@@ -49,6 +49,18 @@ class DevOperatorSqlExecutionTest {
                       (3, 300, 'paid', 3),
                       (4, NULL, NULL, 4)
                     """);
+            statement.execute("""
+                    CREATE TABLE T1 ("C1" BIGINT, "C2" VARCHAR, "C3" VARCHAR, "ORD" BIGINT)
+                    """);
+            statement.execute("""
+                    INSERT INTO T1 VALUES (1, '北京', 'A', 1), (3, '上海', 'C', 2), (5, '广州', 'E', 3)
+                    """);
+            statement.execute("""
+                    CREATE TABLE T2 ("C1" BIGINT, "C2" DECIMAL(38,10), "C3" VARCHAR, "ORD" BIGINT)
+                    """);
+            statement.execute("""
+                    INSERT INTO T2 VALUES (1, 100.5, 'paid', 1), (5, 500, 'new', 2)
+                    """);
         }
     }
 
@@ -59,9 +71,10 @@ class DevOperatorSqlExecutionTest {
         }
     }
 
-    /** 执行算子 SQL，返回去掉 ORD 之后的行。 */
+    /** 执行算子 SQL，按 ORD 取稳定顺序，返回去掉 ORD 之后的行。 */
     private List<List<Object>> execute(DevOperatorSql.Plan plan) throws Exception {
-        try (PreparedStatement statement = connection.prepareStatement(plan.selectSql())) {
+        String sql = "SELECT * FROM (" + plan.selectSql() + ") x ORDER BY x.\"ORD\"";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (int i = 0; i < plan.params().size(); i++) {
                 statement.setObject(i + 1, plan.params().get(i));
             }
@@ -176,5 +189,90 @@ class DevOperatorSqlExecutionTest {
 
         assertThat(plan.columns()).extracting(ColumnMeta::label).containsExactly("amount", "标识");
         assertThat(execute(plan).get(0)).hasSize(2);
+    }
+
+    // ------------------------------------------------------ 双上游 / 透视
+
+    private static DevOperatorSql.Input input(String table, List<ColumnMeta> columns) {
+        return new DevOperatorSql.Input(table, columns);
+    }
+
+    private static final List<ColumnMeta> CITY_COLUMNS = List.of(
+            new ColumnMeta(1, "id", "BIGINT"),
+            new ColumnMeta(2, "city", "VARCHAR"),
+            new ColumnMeta(3, "note", "VARCHAR"));
+
+    @Test
+    void unionAllAppendsBothSides() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("UNION", Map.of("mode", "ALL"),
+                input("T0", UPSTREAM), input("T2", UPSTREAM));
+
+        List<List<Object>> rows = execute(plan);
+        assertThat(rows).hasSize(6);
+        // 左侧 4 行在前、右侧 2 行在后；右侧第一行是重复的 id=1，第二行才是 id=5
+        assertThat(rows.get(4).get(0)).isEqualTo(1L);
+        assertThat(rows.get(5).get(0)).isEqualTo(5L);
+        assertThat(rows.get(5).get(2)).isEqualTo("new");
+    }
+
+    @Test
+    void unionDistinctDropsDuplicateRows() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("UNION", Map.of("mode", "DISTINCT"),
+                input("T0", UPSTREAM), input("T2", UPSTREAM));
+
+        assertThat(execute(plan)).hasSize(5);
+    }
+
+    @Test
+    void joinMatchesOnKey() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("JOIN", Map.of(
+                "joinType", "INNER",
+                "keys", List.of(Map.of("left", "id", "right", "id"))),
+                input("T0", UPSTREAM), input("T1", CITY_COLUMNS));
+
+        List<List<Object>> rows = execute(plan);
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get(0)).isEqualTo(1L);
+        assertThat(rows.get(0).get(3)).isEqualTo("北京");
+        assertThat(rows.get(1).get(3)).isEqualTo("上海");
+    }
+
+    @Test
+    void leftJoinKeepsUnmatchedLeftRows() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("JOIN", Map.of(
+                "joinType", "LEFT",
+                "keys", List.of(Map.of("left", "id", "right", "id"))),
+                input("T0", UPSTREAM), input("T1", CITY_COLUMNS));
+
+        List<List<Object>> rows = execute(plan);
+        assertThat(rows).hasSize(4);
+        // id=2 在右表没有匹配，城市列为 NULL
+        assertThat(rows.get(1).get(0)).isEqualTo(2L);
+        assertThat(rows.get(1).get(3)).isNull();
+    }
+
+    @Test
+    void pivotTurnsValuesIntoColumns() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("PIVOT", Map.of(
+                "pivotColumn", "status", "valueColumn", "amount", "aggregate", "SUM",
+                "values", List.of("paid", "unpaid")), input("T0", UPSTREAM), null);
+
+        List<List<Object>> rows = execute(plan);
+        assertThat(rows).hasSize(1);
+        assertThat((BigDecimal) rows.get(0).get(0)).isEqualByComparingTo("400.5");
+        assertThat((BigDecimal) rows.get(0).get(1)).isEqualByComparingTo("200");
+    }
+
+    @Test
+    void unpivotExpandsEachRowPerColumn() throws Exception {
+        DevOperatorSql.Plan plan = operators.plan("UNPIVOT", Map.of(
+                "columns", List.of("amount", "status")), input("T0", UPSTREAM), null);
+
+        List<List<Object>> rows = execute(plan);
+        assertThat(rows).hasSize(8);
+        assertThat(rows.get(0).get(1)).isEqualTo("amount");
+        assertThat(String.valueOf(rows.get(0).get(2))).startsWith("100.5");
+        assertThat(rows.get(1).get(1)).isEqualTo("status");
+        assertThat(rows.get(1).get(2)).isEqualTo("paid");
     }
 }

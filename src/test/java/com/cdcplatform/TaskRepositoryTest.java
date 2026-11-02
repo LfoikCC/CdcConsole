@@ -49,6 +49,26 @@ class TaskRepositoryTest {
         assertThat(tasks.task(id).status()).isEqualTo(TaskStatus.STOPPED);
     }
 
+    @Test void storesTaskLevelPollIntervalAndRejectsOutOfRange() {
+        long sourceId = configs.addSource(new SourceConfig(null, "poll-source", DatabaseType.STARROCKS,
+                "127.0.0.1", 9030, "", "root", "password", 500, false, null));
+        long targetId = configs.addTarget(new TargetConfig(null, "poll-target", TargetType.STARROCKS_STREAM_LOAD,
+                Map.of("endpoint", "http://127.0.0.1:18030", "database", "target_db", "username", "root", "password", "password"), false, null));
+        long id = tasks.create(new SyncTask(null, "poll task", "", sourceId, targetId,
+                SyncMode.INCREMENTAL_ONLY, null, "Asia/Shanghai", null, null, null, null, 120, 60, true, 1500,
+                List.of(table("orders")), null, null));
+
+        var created = tasks.task(id);
+        assertThat(created.pollIntervalMs()).isEqualTo(1500);
+        assertThat(tasks.pollIntervalMsForMapping(created.tables().getFirst().mappingId())).isEqualTo(1500);
+
+        assertThatThrownBy(() -> tasks.create(new SyncTask(null, "bad poll", "", sourceId, targetId,
+                SyncMode.INCREMENTAL_ONLY, null, "Asia/Shanghai", null, null, null, null, 120, 60, true, 50,
+                List.of(table("order_items")), null, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("轮询间隔");
+    }
+
     @Test void rejectsStaleVersionAndPreventsReferencedConnectionDeletion() {
         long sourceId = configs.addSource(new SourceConfig(null, "version-source", DatabaseType.MYSQL,
                 "127.0.0.1", 3306, "", "root", "password", 500, false, null));

@@ -68,7 +68,7 @@ public class MonitorService {
             .query((RowCallbackHandler)rs->latest.put(rs.getLong("task_id"),Map.of("at",rs.getObject("sampled_at",OffsetDateTime.class),"lag",rs.getLong("lag_ms"),"rate",rs.getDouble("write_rate"))));
         double throughput=0;long maxLag=0,totalHour=0;String maxTask="";boolean complete=true,maxExceeded=false;int freshCount=0;
         var destinations=new HashMap<Long,List<String>>();
-        jdbc.sql("SELECT s.task_id,t.name FROM task_target_subscription s JOIN cdc_target t ON t.id=s.target_id WHERE s.status<>'CANCELLED' ORDER BY s.id")
+        jdbc.sql("SELECT s.task_id,t.name FROM task_target_subscription s JOIN cdc_account t ON t.id=s.target_id WHERE s.status<>'CANCELLED' ORDER BY s.id")
             .query((RowCallbackHandler)rs->destinations.computeIfAbsent(rs.getLong("task_id"),k->new ArrayList<>()).add(rs.getString("name")));
         var sourceNames=new HashMap<Long,String>();var targetNames=new HashMap<Long,String>();var cards=new ArrayList<Map<String,Object>>();
         for(var task:all) {

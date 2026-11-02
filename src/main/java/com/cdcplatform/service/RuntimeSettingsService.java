@@ -13,6 +13,7 @@ import java.util.Map;
 public class RuntimeSettingsService {
     private final JdbcClient jdbc;
     private final CdcProperties properties;
+    private int alertRetentionDays = 30;
 
     public RuntimeSettingsService(JdbcClient jdbc, CdcProperties properties) { this.jdbc = jdbc; this.properties = properties; }
 
@@ -20,17 +21,21 @@ public class RuntimeSettingsService {
     void load() {
         value("cache.segment-size-mb").ifPresent(v -> properties.getCache().setSegmentSizeMb(Long.parseLong(v)));
         value("cache.retention-days").ifPresent(v -> properties.getCache().setRetentionDays(Integer.parseInt(v)));
+        value("alert_retention_days").ifPresent(v -> alertRetentionDays = Integer.parseInt(v));
     }
 
     public Settings current() {
-        return new Settings(properties.getCache().getSegmentSizeMb(), properties.getCache().getRetentionDays());
+        return new Settings(properties.getCache().getSegmentSizeMb(), properties.getCache().getRetentionDays(),
+                alertRetentionDays);
     }
 
     public Settings update(Settings settings) {
         properties.getCache().setSegmentSizeMb(settings.segmentSizeMb());
         properties.getCache().setRetentionDays(settings.retentionDays());
+        alertRetentionDays = settings.alertRetentionDays();
         save("cache.segment-size-mb", String.valueOf(settings.segmentSizeMb()));
         save("cache.retention-days", String.valueOf(settings.retentionDays()));
+        save("alert_retention_days", String.valueOf(settings.alertRetentionDays()));
         return current();
     }
 
@@ -45,5 +50,6 @@ public class RuntimeSettingsService {
                 .param("key", key).param("value", value).update();
     }
 
-    public record Settings(@Min(1) @Max(10240) long segmentSizeMb, @Min(1) @Max(3650) int retentionDays) {}
+    public record Settings(@Min(1) @Max(10240) long segmentSizeMb, @Min(1) @Max(3650) int retentionDays,
+                           @Min(1) @Max(3650) int alertRetentionDays) {}
 }

@@ -1,27 +1,46 @@
 import { describe, expect, it } from 'vitest'
 import {
-  OPERATOR_DEFAULTS, OPERATOR_ICONS, OPERATOR_LABELS, PALETTE_GROUPS,
-  createNode, iconOf, operatorDefaults
+  OPERATOR_DEFAULTS, OPERATOR_ICONS, OPERATOR_LABELS, PALETTE_GROUPS, TWO_INPUT_OPERATORS,
+  createNode, iconOf, needsTwoInputs, operatorDefaults
 } from './nodeTypes'
 
 describe('nodeTypes', () => {
-  it('registers nine operators', () => {
-    expect(Object.keys(OPERATOR_LABELS)).toHaveLength(9)
+  it('registers fourteen operators', () => {
+    expect(Object.keys(OPERATOR_LABELS)).toHaveLength(14)
     expect(OPERATOR_LABELS.AGGREGATE).toBe('分组聚合')
-    expect(OPERATOR_LABELS.MERGE_COLUMNS).toBe('合并列')
+    expect(OPERATOR_LABELS.UNION).toBe('行拼接')
+    expect(OPERATOR_LABELS.JOIN).toBe('关联数据')
+    expect(OPERATOR_LABELS.PIVOT).toBe('行转列')
+    expect(OPERATOR_LABELS.UNPIVOT).toBe('列转行')
+    expect(OPERATOR_LABELS.SQL).toBe('SQL 算子')
   })
 
-  it('exposes a twelve-item palette grouped by input / operator / output', () => {
-    expect(PALETTE_GROUPS.map(group => group.label)).toEqual(['输入', '算子', '输出'])
+  it('exposes a nineteen-item palette in six functional groups', () => {
+    expect(PALETTE_GROUPS.map(group => group.label))
+      .toEqual(['输入/输出', '列编辑', '行处理', '聚合', '多表', '高级'])
     const items = PALETTE_GROUPS.flatMap(group => group.items)
-    expect(items).toHaveLength(12)
-    expect(items.filter(item => item.type === 'OPERATOR')).toHaveLength(9)
+    expect(items).toHaveLength(19)
+    expect(items.filter(item => item.type === 'OPERATOR')).toHaveLength(14)
+    expect(items.filter(item => item.type === 'DATASET_INPUT' || item.type === 'DATASET_OUTPUT')).toHaveLength(2)
     expect(items.every(item => item.icon)).toBe(true)
+    const groupedOperators = PALETTE_GROUPS
+      .filter(group => group.label !== '输入/输出')
+      .flatMap(group => group.items.map(item => item.operator))
+      .sort()
+    expect(groupedOperators).toEqual(Object.keys(OPERATOR_LABELS).sort())
   })
 
   it('gives every operator its own icon', () => {
     const icons = new Set(Object.values(OPERATOR_ICONS))
-    expect(icons.size).toBe(9)
+    expect(icons.size).toBe(14)
+  })
+
+  it('marks only union and join as two-input operators', () => {
+    expect(TWO_INPUT_OPERATORS).toEqual(['UNION', 'JOIN'])
+    expect(needsTwoInputs({ type: 'OPERATOR', config: { operator: 'JOIN' } })).toBe(true)
+    expect(needsTwoInputs({ type: 'OPERATOR', config: { operator: 'UNION' } })).toBe(true)
+    expect(needsTwoInputs({ type: 'OPERATOR', config: { operator: 'FILTER' } })).toBe(false)
+    expect(needsTwoInputs({ type: 'DB_OUTPUT', config: {} })).toBe(false)
   })
 
   it('creates an operator node with the defaults of that operator', () => {

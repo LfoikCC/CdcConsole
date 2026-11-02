@@ -25,6 +25,8 @@ public record SyncTask(
         Integer reconciliationDelayMinutes,
         Integer reconciliationWindowMinutes,
         Boolean reconcileAfterSnapshot,
+        /** 轮询源（StarRocks）的抓取间隔；null 表示沿用账户配置。 */
+        Integer pollIntervalMs,
         @Valid @NotEmpty List<SyncTaskTable> tables,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {
@@ -46,6 +48,6 @@ public record SyncTask(
                     DdlPolicy ddlPolicy, String timeZone, TaskStatus status, Integer version, Integer alertLagSeconds,
                     String reconciliationCron, List<SyncTaskTable> tables, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
         this(id, name, description, sourceId, targetId, syncMode, ddlPolicy, timeZone, status, version,
-                alertLagSeconds, reconciliationCron, 120, 60, true, tables, createdAt, updatedAt);
+                alertLagSeconds, reconciliationCron, 120, 60, true, null, tables, createdAt, updatedAt);
     }
 }

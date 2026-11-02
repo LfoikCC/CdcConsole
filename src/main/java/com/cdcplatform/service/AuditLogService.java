@@ -5,10 +5,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.beans.factory.annotation.Value;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.time.*;
 import java.util.*;
 @Service
 public class AuditLogService {
+ private static final Logger log=LoggerFactory.getLogger(AuditLogService.class);
  private final JdbcClient db;private final ObjectMapper json;private final int days;
  public AuditLogService(JdbcClient db,ObjectMapper json,@Value("${cdc.audit.retention-days:180}")int days){this.db=db;this.json=json;this.days=days;}
  public Object before(HttpServletRequest req){
@@ -21,12 +24,16 @@ public class AuditLogService {
     value.put("tables",db.sql("SELECT source_database,source_schema,source_table,target_schema,target_table,columns_json,key_columns_json,reconciliation_json FROM sync_task_table WHERE task_id=:id ORDER BY id").param("id",id).query().listOfRows());
     value.put("subscriptions",db.sql("SELECT name,target_id,description,status FROM task_target_subscription WHERE task_id=:id ORDER BY id").param("id",id).query().listOfRows());return value;
    }
-   if(parts.length>=4&&parts[2].equals("sources"))return db.sql("SELECT name,db_type,host,port,database_name,username,poll_interval_ms,enabled FROM cdc_source WHERE id=:id").param("id",Long.parseLong(parts[3])).query().listOfRows();
-   if(parts.length>=4&&parts[2].equals("targets"))return db.sql("SELECT name,target_type,config_json,enabled FROM cdc_target WHERE id=:id").param("id",Long.parseLong(parts[3])).query().listOfRows();
+   if(parts.length>=4&&parts[2].equals("sources"))return db.sql("SELECT name,account_type,host,port,database_name,username,extra_json,enabled FROM cdc_account WHERE id=:id").param("id",Long.parseLong(parts[3])).query().listOfRows();
+   if(parts.length>=4&&parts[2].equals("targets"))return db.sql("SELECT name,account_type,extra_json,enabled FROM cdc_account WHERE id=:id").param("id",Long.parseLong(parts[3])).query().listOfRows();
    if(parts.length>=4&&parts[2].equals("mail")&&parts[3].equals("config"))return db.sql("SELECT enabled,host,port,secure,username,from_name,from_email FROM mail_config WHERE id=1").query().singleRow();
    if(parts.length>=5&&parts[2].equals("mail")&&parts[3].equals("rules"))return db.sql("SELECT config_json FROM mail_rule WHERE id=:id").param("id",Long.parseLong(parts[4])).query().listOfRows();
    if(parts.length>=3&&parts[2].equals("settings"))return db.sql("SELECT setting_key,setting_value FROM app_setting").query().listOfRows();
-  }catch(Exception ignored){}return null;
+  }catch(Exception e){
+   // 快照失败不能静默：至少留一条可检索的 warn，并让 before_json 能区分「没有快照」和「快照失败」
+   log.warn("审计快照失败 {} {}：{}",req.getMethod(),req.getRequestURI(),e.toString());
+   return Map.of("_error","snapshot_failed");
+  }return null;
  }
  public void recordRequest(HttpServletRequest req,HttpServletResponse res,Object before){
   String p=req.getRequestURI();if(p.equals("/api/auth/me")&&res.getStatus()==401)return;boolean export=p.equals("/api/audit-logs/export");if((req.getMethod().equals("GET")&&!export&&res.getStatus()<400)||p.equals("/api/tasks/validate")||p.endsWith("/precheck"))return;
@@ -42,7 +49,7 @@ public class AuditLogService {
    .param("uid",user==null||user.id()==0?null:user.id()).param("actor",user==null?"未登录":user.username()).param("action",action).param("type",type).param("id",id).param("name",name).param("result",result).param("ip",ip).param("request",requestId)
    .param("reason",reason==null?null:reason.substring(0,Math.min(2000,reason.length()))).param("before",write(before)).param("after",write(after)).param("recovery",recovery).update();
  }
- private String write(Object value){try{return value==null?null:json.writeValueAsString(sanitize(value));}catch(Exception e){return null;}}
+ private String write(Object value){try{return value==null?null:json.writeValueAsString(sanitize(value));}catch(Exception e){log.warn("审计序列化失败：{}",e.toString());return "{\"_error\":\"serialize_failed\"}";}}
  private Object sanitize(Object value)throws Exception{
   if(value instanceof java.sql.Clob c)return sanitize(c.getSubString(1,(int)c.length()));
   if(value instanceof Map<?,?> map){var safe=new LinkedHashMap<String,Object>();for(var e:map.entrySet()){String k=String.valueOf(e.getKey());safe.put(k,k.toLowerCase(Locale.ROOT).matches(".*(password|secret|token|cookie|authorization|credential).*")?"***":sanitize(e.getValue()));}return safe;}

@@ -14,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 数据开发的持久层。与 {@code TaskRepository} 同一套约定：ID 取自 {@code cdc_config_id} 序列，
@@ -32,13 +33,25 @@ public class DevFlowRepository {
 
     // ---------------------------------------------------------------- flows
 
-    public List<DevFlow> flows(String q, String status) {
+    /**
+     * @param view 顶部汇总卡片的筛选维度：running / failed / succeeded，其余值（含 all）不按运行状态过滤
+     */
+    public List<DevFlow> flows(String q, String status, String view) {
+        String lastRunStatus = switch (view == null ? "" : view.trim().toLowerCase(Locale.ROOT)) {
+            case "running" -> "RUNNING";
+            case "failed" -> "FAILED";
+            case "succeeded" -> "SUCCEEDED";
+            default -> null;
+        };
         var sql = new StringBuilder("SELECT * FROM dev_flow WHERE 1=1");
         if (q != null && !q.isBlank()) {
             sql.append(" AND LOWER(name) LIKE :like");
         }
         if (status != null && !status.isBlank()) {
             sql.append(" AND status = :status");
+        }
+        if (lastRunStatus != null) {
+            sql.append(" AND last_run_status = :lastRunStatus");
         }
         sql.append(" ORDER BY updated_at DESC, id DESC");
         var spec = jdbc.sql(sql.toString());
@@ -47,6 +60,9 @@ public class DevFlowRepository {
         }
         if (status != null && !status.isBlank()) {
             spec = spec.param("status", status);
+        }
+        if (lastRunStatus != null) {
+            spec = spec.param("lastRunStatus", lastRunStatus);
         }
         return spec.query((rs, row) -> readFlow(rs)).list();
     }
@@ -224,7 +240,8 @@ public class DevFlowRepository {
 
     public Summary summary() {
         long total = jdbc.sql("SELECT COUNT(*) FROM dev_flow").query(Long.class).single();
-        long running = jdbc.sql("SELECT COUNT(*) FROM dev_flow_run WHERE status='RUNNING'")
+        // 与「运行中」卡片的筛选口径保持一致：按数据流当前状态计数，而不是按运行记录条数
+        long running = jdbc.sql("SELECT COUNT(*) FROM dev_flow WHERE last_run_status='RUNNING'")
                 .query(Long.class).single();
         long failed = jdbc.sql("""
                         SELECT COUNT(*) FROM dev_flow_run r

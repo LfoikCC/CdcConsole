@@ -11,9 +11,9 @@ class MonitorServiceTest {
         var jdbc=org.springframework.jdbc.core.simple.JdbcClient.create(ds);var json=new com.fasterxml.jackson.databind.ObjectMapper();
         var configs=new com.cdcplatform.repository.ConfigRepository(jdbc,new org.springframework.jdbc.core.JdbcTemplate(ds),json);
         var tasks=new com.cdcplatform.repository.TaskRepository(jdbc,json,configs);
-        jdbc.sql("INSERT INTO cdc_source(id,name,db_type,host,port,database_name,username,password) VALUES(1,'source','MYSQL','localhost',3306,'db','u','')").update();
-        jdbc.sql("INSERT INTO cdc_target(id,name,target_type,config_json) VALUES(1,'target','MYSQL','{}')").update();
-        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode,status) VALUES(1,'fresh',1,1,'INCREMENTAL_ONLY','RUNNING'),(2,'stale',1,1,'INCREMENTAL_ONLY','RUNNING'),(3,'paused',1,1,'INCREMENTAL_ONLY','PAUSED')").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(1,'source','MYSQL','localhost',3306,'db','u','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO cdc_account(id,name,account_type,host,port,database_name,username,password,extra_json,enabled) VALUES(2,'target','MYSQL','localhost',3306,'db','u','','{}',TRUE)").update();
+        jdbc.sql("INSERT INTO sync_task(id,name,source_id,target_id,sync_mode,status) VALUES(1,'fresh',1,2,'INCREMENTAL_ONLY','RUNNING'),(2,'stale',1,2,'INCREMENTAL_ONLY','RUNNING'),(3,'paused',1,2,'INCREMENTAL_ONLY','PAUSED')").update();
         jdbc.sql("INSERT INTO metric_sample(id,task_id,sampled_at,processed_rows,lag_ms,write_rate) VALUES(1,1,DATEADD('MINUTE',-3,CURRENT_TIMESTAMP),10,100,7),(2,1,CURRENT_TIMESTAMP,30,120,9),(3,2,DATEADD('MINUTE',-4,CURRENT_TIMESTAMP),100,9000,900)").update();
         jdbc.sql("INSERT INTO runtime_log(id,task_id,level,message) VALUES(1,1,'WARN','actual event')").update();
         var service=new MonitorService(jdbc,tasks,configs,60000);

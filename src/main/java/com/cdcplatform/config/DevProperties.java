@@ -25,6 +25,8 @@ public class DevProperties {
     private int maxConcurrentRuns = 2;
     /** 中间结果所在的 schema。 */
     private String tempSchema = "DEV_TMP";
+    /** 启动时是否清理该 schema。数据集物化表必须保留，所以数据集的 store 会关掉它。 */
+    private boolean cleanupOnStartup = true;
 
     public int getMaxRowsPerNode() {
         return maxRowsPerNode;
@@ -72,5 +74,13 @@ public class DevProperties {
 
     public void setTempSchema(String tempSchema) {
         this.tempSchema = tempSchema;
+    }
+
+    public boolean isCleanupOnStartup() {
+        return cleanupOnStartup;
+    }
+
+    public void setCleanupOnStartup(boolean cleanupOnStartup) {
+        this.cleanupOnStartup = cleanupOnStartup;
     }
 }

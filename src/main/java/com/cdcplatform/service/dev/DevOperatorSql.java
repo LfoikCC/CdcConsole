@@ -24,6 +24,17 @@ public class DevOperatorSql {
     public record Plan(List<ColumnMeta> columns, String selectSql, List<Object> params) {
     }
 
+    /** 一个上游的物理表与列。双输入算子按连线顺序拿到左、右两个。 */
+    public record Input(String table, List<ColumnMeta> columns) {
+    }
+
+    /** 需要两个上游的算子；其余算子（含输出节点）仍然只接受一条入边。 */
+    public static final Set<String> TWO_INPUT_OPERATORS = Set.of("UNION", "JOIN");
+
+    public static boolean isTwoInput(String operator) {
+        return operator != null && TWO_INPUT_OPERATORS.contains(operator.toUpperCase(Locale.ROOT));
+    }
+
     /** 过滤算子可用的比较符；DevGraphValidator 复用同一份，避免两处白名单漂移。 */
     public static final Set<String> COMPARATORS =
             Set.of("=", "<>", "!=", ">", ">=", "<", "<=", "LIKE", "NOT LIKE", "IS NULL", "IS NOT NULL", "IN", "BETWEEN");
@@ -39,20 +50,33 @@ public class DevOperatorSql {
     private static final Set<String> LEGACY_OPERATORS = Set.of("PROJECT", "FILTER", "SORT", "DEDUP");
 
     public Plan plan(String operator, Map<String, Object> config, String upstream, List<ColumnMeta> upstreamColumns) {
+        return plan(operator, config, new Input(upstream, upstreamColumns), null);
+    }
+
+    public Plan plan(String operator, Map<String, Object> config, Input left, Input right) {
         if (operator == null) {
             throw new IllegalArgumentException("算子节点缺少 operator 配置");
         }
+        if (left == null) {
+            throw new IllegalArgumentException("算子节点没有上游数据");
+        }
         String normalized = operator.toUpperCase(Locale.ROOT);
         Plan plan = switch (normalized) {
-            case "PROJECT" -> project(config, upstream, upstreamColumns);
-            case "FILTER" -> filter(config, upstream, upstreamColumns);
-            case "SORT" -> sort(config, upstream, upstreamColumns);
-            case "DEDUP" -> dedup(config, upstream, upstreamColumns);
-            case "AGGREGATE" -> aggregate(config, upstream, upstreamColumns);
-            case "CALCULATE" -> calculate(config, upstream, upstreamColumns);
-            case "REPLACE_VALUE" -> replaceValue(config, upstream, upstreamColumns);
-            case "REPLACE_NULL" -> replaceNull(config, upstream, upstreamColumns);
-            case "MERGE_COLUMNS" -> mergeColumns(config, upstream, upstreamColumns);
+            case "PROJECT" -> project(config, left.table(), left.columns());
+            case "FILTER" -> filter(config, left.table(), left.columns());
+            case "SORT" -> sort(config, left.table(), left.columns());
+            case "DEDUP" -> dedup(config, left.table(), left.columns());
+            case "AGGREGATE" -> aggregate(config, left.table(), left.columns());
+            case "CALCULATE" -> calculate(config, left.table(), left.columns());
+            case "REPLACE_VALUE" -> replaceValue(config, left.table(), left.columns());
+            case "REPLACE_NULL" -> replaceNull(config, left.table(), left.columns());
+            case "MERGE_COLUMNS" -> mergeColumns(config, left.table(), left.columns());
+            case "UNION" -> union(config, left, right);
+            case "JOIN" -> join(config, left, right);
+            case "PIVOT" -> pivot(config, left);
+            case "UNPIVOT" -> unpivot(config, left);
+            // SQL 算子的输出列要执行后从结果集元数据读，不走这里的静态列推导
+            case "SQL" -> throw new IllegalArgumentException("SQL 算子由执行器直接执行，不能静态推导列");
             default -> throw new IllegalArgumentException("不支持的算子：" + operator);
         };
         if (!LEGACY_OPERATORS.contains(normalized)) {
@@ -232,7 +256,7 @@ public class DevOperatorSql {
 
         List<ColumnMeta> columns = passThrough(up);
         List<String> projection = new ArrayList<>();
-        projection.add("ROW_NUMBER() OVER (ORDER BY x.\"ORD\")");
+        projection.add("ROW_NUMBER() OVER (ORDER BY x.\"ORD\") AS \"ORD\"");
         for (ColumnMeta column : columns) {
             projection.add("x.\"" + column.physical() + "\"");
         }
@@ -515,6 +539,274 @@ public class DevOperatorSql {
         return "COALESCE(CAST(" + ref(column) + " AS VARCHAR), '')";
     }
 
+    // ---------------------------------------------------------------- UNION
+
+    /** 行拼接：两侧列数必须一致，按位置对齐；输出列名与类型沿用左侧。 */
+    private Plan union(Map<String, Object> config, Input left, Input right) {
+        if (right == null) {
+            throw new IllegalArgumentException("行拼接需要两个上游");
+        }
+        List<ColumnMeta> l = left.columns();
+        List<ColumnMeta> r = right.columns();
+        if (l.size() != r.size()) {
+            throw new IllegalArgumentException("行拼接要求两侧列数一致：左 " + l.size() + " 列，右 " + r.size() + " 列");
+        }
+        if (l.isEmpty()) {
+            throw new IllegalArgumentException("行拼接的上游没有可用列");
+        }
+        boolean distinct = "DISTINCT".equalsIgnoreCase(text(config.get("mode")));
+        List<String> physical = new ArrayList<>();
+        for (int i = 1; i <= l.size(); i++) {
+            physical.add("\"C" + i + "\"");
+        }
+        String list = String.join(", ", physical);
+        String leftRows = "SELECT 1 AS \"SRC\", \"ORD\", " + list + " FROM " + left.table();
+        String rightRows = "SELECT 2 AS \"SRC\", \"ORD\", " + list + " FROM " + right.table();
+        String inner = leftRows + " UNION ALL " + rightRows;
+        String sql;
+        if (distinct) {
+            // 按最早出现的 ORD 排序：DISTINCT 之后仍保持「先出现的在前」
+            sql = "SELECT ROW_NUMBER() OVER (ORDER BY MIN(u.\"ORD\")) AS \"ORD\", "
+                    + qualifiedColumns("u", l.size())
+                    + " FROM (" + inner + ") u GROUP BY " + qualifiedColumns("u", l.size());
+        } else {
+            // 先按来源、再按各自 ORD：左侧整体在前，右侧整体在后，而不是按 ORD 交错
+            sql = "SELECT ROW_NUMBER() OVER (ORDER BY u.\"SRC\", u.\"ORD\") AS \"ORD\", "
+                    + qualifiedColumns("u", l.size())
+                    + " FROM (" + inner + ") u";
+        }
+        return new Plan(passThrough(l), sql, List.of());
+    }
+
+    // ----------------------------------------------------------------- JOIN
+
+    /** 关联数据：左表全部列 + 右表非关联键列；右表重名列加 {@code _右} 后缀。 */
+    private Plan join(Map<String, Object> config, Input left, Input right) {
+        if (right == null) {
+            throw new IllegalArgumentException("关联数据需要两个上游");
+        }
+        String type = text(config.get("joinType"));
+        String joinType = switch (type == null ? "INNER" : type.toUpperCase(Locale.ROOT)) {
+            case "INNER" -> "INNER JOIN";
+            case "LEFT" -> "LEFT JOIN";
+            case "RIGHT" -> "RIGHT JOIN";
+            default -> throw new IllegalArgumentException("不支持的关联类型：" + type);
+        };
+        List<Object> keys = DevGraphValidator.asList(config.get("keys"));
+        if (keys.isEmpty()) {
+            throw new IllegalArgumentException("关联数据至少需要一个关联键");
+        }
+
+        List<String> on = new ArrayList<>();
+        Set<String> rightKeyLabels = new LinkedHashSet<>();
+        for (Object raw : keys) {
+            if (!(raw instanceof Map<?, ?> key)) {
+                continue;
+            }
+            String leftLabel = text(key.get("left"));
+            String rightLabel = text(key.get("right"));
+            if (leftLabel == null || rightLabel == null) {
+                throw new IllegalArgumentException("关联键需要同时指定左表和右表字段");
+            }
+            ColumnMeta leftColumn = require(left.columns(), leftLabel);
+            ColumnMeta rightColumn = require(right.columns(), rightLabel);
+            on.add("l.\"" + leftColumn.physical() + "\" = r.\"" + rightColumn.physical() + "\"");
+            rightKeyLabels.add(rightLabel);
+        }
+        if (on.isEmpty()) {
+            throw new IllegalArgumentException("关联数据没有有效的关联键");
+        }
+
+        List<ColumnMeta> columns = new ArrayList<>();
+        Set<String> used = new LinkedHashSet<>();
+        List<String> expressions = new ArrayList<>();
+        for (ColumnMeta column : left.columns()) {
+            columns.add(new ColumnMeta(columns.size() + 1, column.label(), column.h2Type()));
+            used.add(column.label());
+            // 显式别名成 C1..Cn：左右表的物理列名会重名，派生表里必须唯一
+            expressions.add("l.\"" + column.physical() + "\" AS \"C" + columns.size() + "\"");
+        }
+        for (ColumnMeta column : right.columns()) {
+            if (rightKeyLabels.contains(column.label())) {
+                continue;
+            }
+            String label = column.label();
+            while (used.contains(label)) {
+                label = label + "_右";
+            }
+            used.add(label);
+            columns.add(new ColumnMeta(columns.size() + 1, label, column.h2Type()));
+            expressions.add("r.\"" + column.physical() + "\" AS \"C" + columns.size() + "\"");
+        }
+
+        // 外连接时一侧的 ORD 会是 NULL，取另一侧保证顺序稳定
+        String ord = "ROW_NUMBER() OVER (ORDER BY COALESCE(l.\"ORD\", r.\"ORD\"))";
+        String sql = "SELECT " + ord + " AS \"ORD\""
+                + (expressions.isEmpty() ? "" : ", " + String.join(", ", expressions))
+                + " FROM " + left.table() + " l " + joinType + " " + right.table() + " r"
+                + " ON " + String.join(" AND ", on);
+        return new Plan(columns, sql, List.of());
+    }
+
+    // ---------------------------------------------------------------- PIVOT
+
+    /**
+     * 行转列。
+     *
+     * <p>列值必须由用户显式给出：输出列在生成 SQL 时就要确定，而 {@code plan()} 不访问数据库，
+     * 没法先查 DISTINCT 值。显式列表也顺带保证了同一份配置每次产出同样的列。
+     */
+    private Plan pivot(Map<String, Object> config, Input left) {
+        List<ColumnMeta> up = left.columns();
+        List<ColumnMeta> groups = new ArrayList<>();
+        List<String> groupRefs = new ArrayList<>();
+        for (Object raw : DevGraphValidator.asList(config.get("groupBy"))) {
+            String label = text(raw);
+            if (label == null) {
+                continue;
+            }
+            ColumnMeta column = require(up, label);
+            groups.add(column);
+            groupRefs.add(ref(column));
+        }
+        String pivotLabel = text(config.get("pivotColumn"));
+        String valueLabel = text(config.get("valueColumn"));
+        if (pivotLabel == null) {
+            throw new IllegalArgumentException("行转列需要指定「转为列」的字段");
+        }
+        if (valueLabel == null) {
+            throw new IllegalArgumentException("行转列需要指定「取值」字段");
+        }
+        ColumnMeta pivotColumn = require(up, pivotLabel);
+        ColumnMeta valueColumn = require(up, valueLabel);
+
+        List<String> values = new ArrayList<>();
+        for (Object raw : DevGraphValidator.asList(config.get("values"))) {
+            String value = text(raw);
+            if (value != null) {
+                values.add(value);
+            }
+        }
+        if (values.isEmpty()) {
+            throw new IllegalArgumentException("行转列至少需要一个列值");
+        }
+
+        String function = text(config.get("aggregate"));
+        String upper = function == null ? "SUM" : function.toUpperCase(Locale.ROOT);
+        if (!Set.of("SUM", "COUNT", "AVG", "MIN", "MAX").contains(upper)) {
+            throw new IllegalArgumentException("不支持的聚合函数：" + function);
+        }
+        if ("SUM".equals(upper) || "AVG".equals(upper)) {
+            requireNumeric(valueColumn, upper);
+        }
+
+        List<ColumnMeta> columns = new ArrayList<>();
+        List<String> expressions = new ArrayList<>();
+        List<Object> params = new ArrayList<>();
+        for (ColumnMeta column : groups) {
+            columns.add(new ColumnMeta(columns.size() + 1, column.label(), column.h2Type()));
+            expressions.add(ref(column));
+        }
+        for (String value : values) {
+            if (groups.stream().anyMatch(column -> column.label().equals(value))) {
+                throw new IllegalArgumentException("列值 " + value + " 与分组字段重名，无法作为输出列");
+            }
+            expressions.add(upper + "(CASE WHEN " + ref(pivotColumn) + " = ? THEN " + ref(valueColumn) + " END)");
+            params.add(value);
+            columns.add(new ColumnMeta(columns.size() + 1, value, pivotType(upper, valueColumn)));
+        }
+
+        String ord = "ROW_NUMBER() OVER (ORDER BY MIN(up.\"ORD\"))";
+        String groupClause = groupRefs.isEmpty() ? null : String.join(", ", groupRefs);
+        return new Plan(columns, select(left.table(), ord, expressions, null, groupClause), params);
+    }
+
+    private static String pivotType(String function, ColumnMeta value) {
+        return switch (function) {
+            case "COUNT" -> "BIGINT";
+            case "SUM", "AVG" -> "DOUBLE".equalsIgnoreCase(value.h2Type()) ? "DOUBLE" : "DECIMAL(38,10)";
+            default -> value.h2Type();
+        };
+    }
+
+    // -------------------------------------------------------------- UNPIVOT
+
+    /** 列转行：保留其余列，把选中列展开成「字段名 / 值」两列；值统一转 VARCHAR。 */
+    private Plan unpivot(Map<String, Object> config, Input left) {
+        List<ColumnMeta> up = left.columns();
+        List<ColumnMeta> sources = new ArrayList<>();
+        Set<String> unpivoted = new LinkedHashSet<>();
+        for (Object raw : DevGraphValidator.asList(config.get("columns"))) {
+            String label = text(raw);
+            if (label == null) {
+                continue;
+            }
+            ColumnMeta column = require(up, label);
+            sources.add(column);
+            unpivoted.add(label);
+        }
+        if (sources.isEmpty()) {
+            throw new IllegalArgumentException("列转行至少需要一个字段");
+        }
+        String nameLabel = text(config.get("nameColumn"));
+        String valueLabel = text(config.get("valueColumn"));
+        if (nameLabel == null) {
+            nameLabel = "字段";
+        }
+        if (valueLabel == null) {
+            valueLabel = "值";
+        }
+        if (nameLabel.equals(valueLabel)) {
+            throw new IllegalArgumentException("字段名列与值列名不能相同");
+        }
+
+        List<ColumnMeta> kept = new ArrayList<>();
+        for (ColumnMeta column : up) {
+            if (!unpivoted.contains(column.label())) {
+                kept.add(column);
+            }
+        }
+
+        List<String> branches = new ArrayList<>();
+        List<Object> params = new ArrayList<>();
+        for (int i = 0; i < sources.size(); i++) {
+            ColumnMeta source = sources.get(i);
+            List<String> select = new ArrayList<>();
+            select.add("up.\"ORD\" AS \"ORD\"");
+            for (ColumnMeta column : kept) {
+                select.add(ref(column) + " AS \"" + column.physical() + "\"");
+            }
+            select.add((i + 1) + " AS \"SEQ\"");
+            select.add("CAST(? AS VARCHAR) AS \"CNAME\"");
+            params.add(source.label());
+            select.add("CAST(" + ref(source) + " AS VARCHAR) AS \"CVAL\"");
+            branches.add("SELECT " + String.join(", ", select) + " FROM " + left.table() + " up");
+        }
+
+        List<String> outer = new ArrayList<>();
+        for (ColumnMeta column : kept) {
+            outer.add("u.\"" + column.physical() + "\"");
+        }
+        outer.add("u.\"CNAME\"");
+        outer.add("u.\"CVAL\"");
+        String sql = "SELECT ROW_NUMBER() OVER (ORDER BY u.\"ORD\", u.\"SEQ\") AS \"ORD\", "
+                + String.join(", ", outer)
+                + " FROM (" + String.join(" UNION ALL ", branches) + ") u";
+
+        List<ColumnMeta> columns = passThrough(kept);
+        columns.add(new ColumnMeta(columns.size() + 1, nameLabel, "VARCHAR"));
+        columns.add(new ColumnMeta(columns.size() + 1, valueLabel, "VARCHAR"));
+        return new Plan(columns, sql, params);
+    }
+
+    private static String qualifiedColumns(String alias, int count) {
+        List<String> columns = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            columns.add(alias + ".\"C" + i + "\"");
+        }
+        return String.join(", ", columns);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private static String ref(ColumnMeta column) {
@@ -538,7 +830,7 @@ public class DevOperatorSql {
     /** {@code groupBy} 为 null 时不追加 GROUP BY 子句（全局聚合就是这种形态）。 */
     private static String select(String upstream, String ordExpression, List<String> expressions,
                                  String where, String groupBy) {
-        StringBuilder sql = new StringBuilder("SELECT ").append(ordExpression);
+        StringBuilder sql = new StringBuilder("SELECT ").append(ordExpression).append(" AS \"ORD\"");
         for (String expression : expressions) {
             sql.append(", ").append(expression);
         }

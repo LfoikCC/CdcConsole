@@ -75,6 +75,40 @@ class DevTempTableStoreTest {
     }
 
     @Test
+    void runSqlInfersColumnsAndWritesRows() throws Exception {
+        seed();
+        String table = store.tableName(42, "sql");
+
+        var result = store.runSql(table, "SELECT \"id\", \"name\" FROM SRC WHERE \"amount\" > 15", 100);
+
+        assertThat(result.rows()).isEqualTo(2);
+        assertThat(result.columns()).extracting(ColumnMeta::label).containsExactly("id", "name");
+        var preview = store.preview(table, 10);
+        assertThat(preview.columns()).containsExactly("id", "name");
+        assertThat(preview.rows()).hasSize(2);
+    }
+
+    @Test
+    void sqlOperatorViewMapsLogicalNamesBackToLabels() throws Exception {
+        List<ColumnMeta> columns = List.of(
+                new ColumnMeta(1, "id", "BIGINT"),
+                new ColumnMeta(2, "name", "VARCHAR"));
+        String source = store.tableName(7, "up");
+        store.create(source, columns);
+        store.execute("INSERT INTO " + source + " (\"ORD\",\"C1\",\"C2\") VALUES (1,1,'a'),(2,2,'b')");
+
+        String view = store.tableName(7, "up_view");
+        store.createView(view, source, columns);
+        var result = store.runSql(store.tableName(7, "sql_out"),
+                "SELECT id, name FROM " + view + " WHERE id > 1", 10, columns);
+        store.dropView(view);
+
+        // 视图列名是大写 ID/NAME，结果标签要还原成用户看到的 id/name
+        assertThat(result.columns()).extracting(ColumnMeta::label).containsExactly("id", "name");
+        assertThat(result.rows()).isEqualTo(1);
+    }
+
+    @Test
     void previewFollowsInsertionOrderThroughOrdColumn() throws Exception {
         seed();
         String table = store.tableName(42, "n2");

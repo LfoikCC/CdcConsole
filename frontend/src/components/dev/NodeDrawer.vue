@@ -1,21 +1,24 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { api } from '../../api'
+import { CdcMessage } from '../ui/feedback'
 import {
-  AGG_FUNCTIONS, CAST_TYPES, COMPARATORS, MODE_OPTIONS, OPERATOR_LABELS, OPERATOR_OPTIONS,
-  iconOf, metaOf, operatorDefaults
+  AGG_FUNCTIONS, CAST_TYPES, COMPARATORS, MODE_OPTIONS, OPERATOR_LABELS,
+  iconOf, metaOf,
 } from './nodeTypes'
 
 const props = defineProps({
   node: { type: Object, required: true },
   sources: { type: Array, default: () => [] },
   targets: { type: Array, default: () => [] },
+  datasets: { type: Array, default: () => [] },
   upstreamColumns: { type: Array, default: () => [] },
+  secondUpstreamColumns: { type: Array, default: () => [] },
   preview: { type: Object, default: null },
   busy: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['apply', 'preview', 'close', 'need-upstream'])
+const emit = defineEmits(['apply', 'preview', 'close', 'need-upstream', 'delete', 'dataset-created'])
 
 const meta = computed(() => metaOf(props.node.type))
 const icon = computed(() => iconOf(props.node))
@@ -26,6 +29,18 @@ const nodeName = ref(props.node.name || meta.value.label)
 const databases = ref([])
 const tables = ref([])
 const targetTables = ref([])
+const localDatasets = ref([])
+const creatingDataset = ref(false)
+const newDatasetName = ref('')
+const DATASET_TYPE_LABELS = { TABLE: '库表', SQL: 'SQL', EXCEL: 'Excel', EXTRACT: '离线' }
+const datasetOptions = computed(() => {
+  const seen = new Set()
+  return [...props.datasets, ...localDatasets.value].filter(item => {
+    if (seen.has(item.id) || item.datasetType === 'SQL') return false
+    seen.add(item.id)
+    return true
+  })
+})
 const tableMeta = ref(null)
 const targetMeta = ref(null)
 const loading = ref(false)
@@ -200,14 +215,28 @@ function dedupKeys() {
   return draft.value.keys
 }
 
-/**
- * 切换算子时整份替换配置。
- *
- * <p>不同算子的字段语义完全不同（SORT 的 keys 是对象、DEDUP 的 keys 是字符串），
- * 保留残值会被 String.valueOf 静默吃掉，表现成「运行成功但数据不对」。
- */
-function onOperatorChange(value) {
-  draft.value = operatorDefaults(value)
+async function createExtractDataset() {
+  const name = newDatasetName.value.trim()
+  if (!name) {
+    CdcMessage.warning('请填写离线数据集名称')
+    return
+  }
+  creatingDataset.value = true
+  try {
+    const created = await api('/datasets/extract', {
+      method: 'POST',
+      body: JSON.stringify({ name, description: '' })
+    })
+    localDatasets.value.push({ id: created.id, name, datasetType: 'EXTRACT' })
+    draft.value.datasetId = created.id
+    newDatasetName.value = ''
+    emit('dataset-created', created)
+    CdcMessage.success('离线数据集已创建，运行数据流后写入数据')
+  } catch (e) {
+    CdcMessage.error(e.message)
+  } finally {
+    creatingDataset.value = false
+  }
 }
 
 function groupBy() {
@@ -245,13 +274,28 @@ function fills() {
   if (!Array.isArray(draft.value.fills)) draft.value.fills = []
   return draft.value.fills
 }
-
 function addFill() {
   fills().push({ column: props.upstreamColumns[0]?.label || '', value: '' })
 }
 
 function removeFill(index) {
   fills().splice(index, 1)
+}
+
+function joinKeys() {
+  if (!Array.isArray(draft.value.keys)) draft.value.keys = []
+  return draft.value.keys
+}
+
+function addJoinKey() {
+  joinKeys().push({
+    left: props.upstreamColumns[0]?.label || '',
+    right: props.secondUpstreamColumns[0]?.label || ''
+  })
+}
+
+function removeJoinKey(index) {
+  joinKeys().splice(index, 1)
 }
 
 function apply() {
@@ -270,7 +314,7 @@ function apply() {
     <header class="nd-head">
       <span class="nd-icon"><component :is="icon" :size="15"/></span>
       <div>
-        <strong>{{ meta.label }}</strong>
+        <strong>{{ node.type === 'OPERATOR' ? (OPERATOR_LABELS[draft.operator] || meta.label) : meta.label }}</strong>
         <small>{{ node.id }}</small>
       </div>
       <button class="icon-btn" aria-label="关闭" @click="emit('close')">✕</button>
@@ -283,8 +327,20 @@ function apply() {
           <div class="form-help">画布卡片上显示的名字，留空则用默认名称</div>
         </cdc-form-item>
 
+        <!-- 数据集输入 -->
+        <template v-if="node.type === 'DATASET_INPUT'">
+          <cdc-form-item label="数据集" required>
+            <cdc-select :model-value="draft.datasetId" filterable placeholder="选择数据集"
+                        @update:model-value="value => (draft.datasetId = value)">
+              <cdc-option v-for="item in datasets" :key="item.id"
+                          :label="`${item.name}（${item.datasetType}）`" :value="item.id"/>
+            </cdc-select>
+            <div class="form-help">数据集在「数据准备」里维护；直连表 / SQL 实时读取，Excel 读取平台内的副本</div>
+          </cdc-form-item>
+        </template>
+
         <!-- 数据库输入 -->
-        <template v-if="node.type === 'DB_INPUT'">
+        <template v-else-if="node.type === 'DB_INPUT'">
           <cdc-form-item label="源连接" required>
             <cdc-select :model-value="draft.sourceId" filterable placeholder="选择源连接"
                         @update:model-value="onSourceChange">
@@ -339,13 +395,6 @@ function apply() {
 
         <!-- 基础算子 -->
         <template v-else-if="node.type === 'OPERATOR'">
-          <cdc-form-item label="算子">
-            <cdc-select :model-value="draft.operator" allow-deselect="false"
-                        @update:model-value="onOperatorChange">
-              <cdc-option v-for="item in OPERATOR_OPTIONS" :key="item.value" :label="item.label" :value="item.value"/>
-            </cdc-select>
-          </cdc-form-item>
-
           <div v-if="!upstreamColumns.length" class="nd-empty">
             先配置并预览上游节点，才能选择字段
             <button class="btn btn-ghost btn-sm" @click="emit('need-upstream')">刷新上游字段</button>
@@ -508,10 +557,149 @@ function apply() {
               </cdc-checkbox>
               <div class="form-help">数值列转成文本后可能带尾零，需要时请配合计算列处理</div>
             </div>
+
+            <!-- 行拼接 -->
+            <div v-else-if="draft.operator === 'UNION'" class="nd-list">
+              <cdc-form-item label="拼接方式">
+                <cdc-radio-group :model-value="draft.mode || 'ALL'"
+                                 @update:model-value="value => (draft.mode = value)">
+                  <cdc-radio-button value="ALL">全部保留</cdc-radio-button>
+                  <cdc-radio-button value="DISTINCT">去重</cdc-radio-button>
+                </cdc-radio-group>
+              </cdc-form-item>
+              <div class="form-help">
+                左表 {{ upstreamColumns.length }} 列、右表 {{ secondUpstreamColumns.length }} 列，
+                按位置对齐；输出列名与类型沿用左表。
+              </div>
+              <p v-if="upstreamColumns.length !== secondUpstreamColumns.length" class="nd-error">
+                两侧列数不一致，运行前需要调整到相同列数
+              </p>
+            </div>
+
+            <!-- 关联数据 -->
+            <div v-else-if="draft.operator === 'JOIN'" class="nd-list">
+              <cdc-form-item label="关联类型">
+                <cdc-select :model-value="draft.joinType || 'INNER'"
+                            @update:model-value="value => (draft.joinType = value)">
+                  <cdc-option label="内连接（只保留匹配行）" value="INNER"/>
+                  <cdc-option label="左连接（保留左表全部）" value="LEFT"/>
+                  <cdc-option label="右连接（保留右表全部）" value="RIGHT"/>
+                </cdc-select>
+              </cdc-form-item>
+              <div v-for="(key, index) in joinKeys()" :key="index" class="nd-join-key">
+                <cdc-select v-model="key.left" filterable placeholder="左表字段">
+                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+                <cdc-select v-model="key.right" filterable placeholder="右表字段">
+                  <cdc-option v-for="column in secondUpstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+                <button class="icon-btn" aria-label="删除关联键" @click="removeJoinKey(index)">✕</button>
+              </div>
+              <button class="btn btn-ghost btn-sm" @click="addJoinKey">+ 添加关联键</button>
+              <div class="form-help">
+                按连线顺序：先连的是左表，后连的是右表；右表的关联键不会重复输出。
+              </div>
+            </div>
+
+            <!-- 行转列 -->
+            <div v-else-if="draft.operator === 'PIVOT'" class="nd-list">
+              <cdc-form-item label="分组字段">
+                <cdc-select :model-value="groupBy()" multiple filterable placeholder="不选表示全局汇总"
+                            @update:model-value="value => (draft.groupBy = value)">
+                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+              </cdc-form-item>
+              <cdc-form-item label="转为列的字段" required>
+                <cdc-select :model-value="draft.pivotColumn" filterable
+                            @update:model-value="value => (draft.pivotColumn = value)">
+                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+              </cdc-form-item>
+              <cdc-form-item label="取值字段" required>
+                <cdc-select :model-value="draft.valueColumn" filterable
+                            @update:model-value="value => (draft.valueColumn = value)">
+                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+              </cdc-form-item>
+              <cdc-form-item label="聚合方式">
+                <cdc-select :model-value="draft.aggregate || 'SUM'"
+                            @update:model-value="value => (draft.aggregate = value)">
+                  <cdc-option v-for="fn in ['SUM', 'COUNT', 'AVG', 'MIN', 'MAX']" :key="fn" :label="fn" :value="fn"/>
+                </cdc-select>
+              </cdc-form-item>
+              <cdc-form-item label="列值" required>
+                <cdc-input :model-value="(draft.values || []).join(', ')"
+                           placeholder="例如 已支付, 未支付"
+                           @update:model-value="value => (draft.values = value.split(',').map(item => item.trim()).filter(Boolean))"/>
+                <div class="form-help">这些值会变成输出列名，用逗号分隔</div>
+              </cdc-form-item>
+            </div>
+
+            <!-- 列转行 -->
+            <div v-else-if="draft.operator === 'UNPIVOT'" class="nd-list">
+              <cdc-form-item label="转为行的字段" required>
+                <cdc-select :model-value="draft.columns" multiple filterable placeholder="选择要展开的字段"
+                            @update:model-value="value => (draft.columns = value)">
+                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                              :label="column.label" :value="column.label"/>
+                </cdc-select>
+              </cdc-form-item>
+              <cdc-form-item label="字段名列名">
+                <cdc-input v-model="draft.nameColumn" placeholder="字段"/>
+              </cdc-form-item>
+              <cdc-form-item label="值列名">
+                <cdc-input v-model="draft.valueColumn" placeholder="值"/>
+              </cdc-form-item>
+              <div class="form-help">值统一转成文本；未选中的列原样保留</div>
+            </div>
+
+            <!-- SQL 算子 -->
+            <div v-else-if="draft.operator === 'SQL'" class="nd-list">
+              <cdc-form-item label="查询 SQL" required>
+                <textarea v-model="draft.sql" class="nd-sql" rows="10"
+                          :placeholder="'SELECT * FROM {{input}} WHERE amount > 100'"/>
+                <div class="form-help">
+                  用 <span class="mono" v-text="'{{input}}'"/> 引用上游临时表；只支持单条 SELECT / WITH 查询
+                </div>
+              </cdc-form-item>
+              <div class="form-help">
+                可用列：<span class="mono">{{ upstreamColumns.map(item => item.label).join('、') }}</span>
+              </div>
+            </div>
           </template>
         </template>
 
         <!-- 数据库输出 -->
+        <!-- 数据集输出 -->
+        <template v-else-if="node.type === 'DATASET_OUTPUT'">
+          <cdc-form-item label="数据集" required>
+            <cdc-select :model-value="draft.datasetId" filterable placeholder="选择数据集"
+                        @update:model-value="value => (draft.datasetId = value)">
+              <cdc-option v-for="item in datasetOptions" :key="item.id"
+                          :label="`${item.name}（${DATASET_TYPE_LABELS[item.datasetType] || item.datasetType}）`" :value="item.id"/>
+            </cdc-select>
+            <div class="nd-new-dataset">
+              <cdc-input v-model="newDatasetName" placeholder="新离线数据集名称"/>
+              <button class="btn btn-ghost btn-sm" :disabled="creatingDataset" @click="createExtractDataset">
+                {{ creatingDataset ? '创建中…' : '新建离线数据集' }}
+              </button>
+            </div>
+            <div class="form-help">库表数据集写回源表；Excel / 离线数据集写回平台副本，离线数据集首次运行后才会有数据</div>
+          </cdc-form-item>
+          <cdc-form-item label="写入模式">
+            <cdc-radio-group :model-value="draft.mode || 'OVERWRITE'"
+                             @update:model-value="value => (draft.mode = value)">
+              <cdc-radio-button value="OVERWRITE">覆盖</cdc-radio-button>
+              <cdc-radio-button value="APPEND">追加</cdc-radio-button>
+            </cdc-radio-group>
+          </cdc-form-item>
+        </template>
+
         <template v-else-if="node.type === 'DB_OUTPUT'">
           <cdc-form-item label="目标连接" required>
             <cdc-select :model-value="draft.targetId" filterable placeholder="选择目标连接"
@@ -554,7 +742,7 @@ function apply() {
       <section v-if="preview" class="nd-preview">
         <header>
           <strong>预览</strong>
-          <span class="dim">{{ preview.rowsRead }} 行{{ preview.truncated ? '（已截断）' : '' }}</span>
+          <span class="dim">{{ preview.rows.length }} 行{{ preview.truncated ? `（共 ${preview.rowsRead} 行，仅显示前 100 行）` : '' }}</span>
         </header>
         <p v-if="preview.note" class="form-help">{{ preview.note }}</p>
         <div class="nd-preview-table">
@@ -571,7 +759,8 @@ function apply() {
     </div>
 
     <footer class="nd-foot">
-      <button class="btn btn-ghost" :disabled="busy" @click="emit('preview')">预览</button>
+      <button class="btn btn-ghost danger-text nd-delete" :disabled="busy" @click="emit('delete')">删除节点</button>
+      <button class="btn btn-ghost" :disabled="busy" @click="emit('preview', { config: draft, name: nodeName })">预览</button>
       <button class="btn btn-primary" :disabled="busy" @click="apply">应用</button>
     </footer>
   </aside>

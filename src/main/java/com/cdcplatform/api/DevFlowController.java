@@ -52,9 +52,10 @@ public class DevFlowController {
     @GetMapping("/flows")
     Object flows(@RequestParam(defaultValue = "") String q,
                  @RequestParam(required = false) String status,
+                 @RequestParam(defaultValue = "all") String view,
                  @RequestParam(defaultValue = "0") int page,
                  @RequestParam(defaultValue = "20") int size) {
-        List<DevFlow> all = flows.flows(q, status);
+        List<DevFlow> all = flows.flows(q, status, view);
         int safePage = Math.max(0, page), safeSize = Math.max(1, Math.min(size, 100));
         int from = (int) Math.min((long) safePage * safeSize, all.size());
         int to = Math.min(from + safeSize, all.size());
@@ -115,6 +116,8 @@ public class DevFlowController {
     @DeleteMapping("/flows/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void delete(@PathVariable long id) {
+        // 先发取消信号，再删记录：否则后台线程会继续写目标，run 记录被级联删掉后成了孤儿
+        executor.cancelFlow(id);
         flows.delete(id);
     }
 
@@ -130,9 +133,14 @@ public class DevFlowController {
         return Map.of("id", executor.submit(id, actor()));
     }
 
+    @PostMapping("/flows/{id}/runs/{runId}/cancel")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void cancel(@PathVariable long id, @PathVariable long runId) {
+        executor.cancel(id, runId);
+    }
+
     @GetMapping("/flows/{id}/runs")
-    Object runs(@PathVariable long id,
-                @RequestParam(defaultValue = "0") int page,
+    Object runs(@PathVariable long id,                @RequestParam(defaultValue = "0") int page,
                 @RequestParam(defaultValue = "20") int size) {
         return flows.runs(id, page, size);
     }
@@ -145,7 +153,7 @@ public class DevFlowController {
     @PostMapping("/flows/{id}/nodes/{nodeKey}/preview")
     Object preview(@PathVariable long id, @PathVariable String nodeKey,
                    @RequestBody(required = false) PreviewInput input) {
-        int limit = input == null || input.limit() == null ? 200 : input.limit();
+        int limit = input == null || input.limit() == null ? 100 : input.limit();
         return executor.preview(id, nodeKey, limit);
     }
 

@@ -20,6 +20,9 @@ import java.util.*;
 @RestController
 @RequestMapping("/api")
 public class TaskController {
+    public record AlertPage(List<com.cdcplatform.model.OperationsModels.AlertEvent> items, long total,
+                            int page, int size, int totalPages, Map<String, Long> counts) {
+    }
     private final TaskRepository tasks;
     private final ConfigRepository configs;
     private final TaskConfigurationService configuration;
@@ -171,7 +174,15 @@ public class TaskController {
         return reconciliationRepository.discrepancies(taskId, runId, page, size, type);
     }
 
-    @GetMapping("/alerts") Object alerts(@RequestParam(required = false) AlertStatus status) { return tasks.alerts(status); }
+    @GetMapping("/alerts") Object alerts(@RequestParam(required = false) AlertStatus status,
+                                         @RequestParam(defaultValue = "0") int page,
+                                         @RequestParam(defaultValue = "20") int size) {
+        var result = tasks.alerts(status, page, size);
+        return new AlertPage(result.items(), result.total(), result.page(), result.size(),
+                result.totalPages(), tasks.alertCounts());
+    }
+
+    @GetMapping("/alerts/counts") Object alertCounts() { return tasks.alertCounts(); }
     @PostMapping("/alerts/{id}/acknowledge") void acknowledge(@PathVariable long id) { tasks.updateAlert(id, AlertStatus.ACKNOWLEDGED); events.publish("alert", Map.of("alertId", id, "status", "ACKNOWLEDGED")); }
     @PostMapping("/alerts/{id}/resolve") void resolve(@PathVariable long id) { tasks.updateAlert(id, AlertStatus.RESOLVED); events.publish("alert", Map.of("alertId", id, "status", "RESOLVED")); }
 

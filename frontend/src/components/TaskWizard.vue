@@ -17,7 +17,7 @@ const form = reactive(blank())
 const confirmedSourceId = ref(null), confirmedTargetId = ref(null)
 const initializing = ref(false)
 
-function blank() { return { id:null,name:'',description:'',sourceId:null,targetId:null,additionalTargetIds:[],syncMode:'FULL_INCREMENTAL',ddlPolicy:'DETECT_AND_BLOCK',timeZone:'Asia/Shanghai',version:0,alertLagSeconds:60,reconciliationCron:'',reconciliationDelayMinutes:120,reconciliationWindowMinutes:60,reconcileAfterSnapshot:true,tables:[] } }
+function blank() { return { id:null,name:'',description:'',sourceId:null,targetId:null,additionalTargetIds:[],syncMode:'FULL_INCREMENTAL',ddlPolicy:'DETECT_AND_BLOCK',timeZone:'Asia/Shanghai',version:0,alertLagSeconds:60,reconciliationCron:'',reconciliationDelayMinutes:120,reconciliationWindowMinutes:60,reconcileAfterSnapshot:true,pollIntervalMs:null,tables:[] } }
 watch(() => props.modelValue, async open => {
   if (!open) return
   initializing.value = true
@@ -41,6 +41,11 @@ watch(form, () => { if (props.modelValue && !initializing.value) dirty.value = t
 const source = computed(() => store.sources.find(x => x.id === form.sourceId))
 const target = computed(() => store.targets.find(x => x.id === form.targetId))
 const isKafka = computed(() => target.value?.targetType === 'KAFKA')
+const targetMissingDatabase = computed(() => {
+  const t = target.value
+  if (!t || !['MYSQL', 'SQLSERVER', 'STARROCKS_STREAM_LOAD'].includes(t.targetType)) return false
+  return !String(t.config?.database || '').trim()
+})
 const targetOptions = computed(() => targetTables.value.map(x => ({ ...x, key:(x.schema ? x.schema+'.' : '')+x.table })))
 const mappedCount = computed(() => form.tables.filter(x => Object.keys(x.columns || {}).length).length)
 
@@ -123,11 +128,14 @@ async function connectionChanged(kind) {
   }
   if (kind === 'source') confirmedSourceId.value = form.sourceId
   else confirmedTargetId.value = form.targetId
+  if (kind === 'source' && source.value?.dbType !== 'STARROCKS') form.pollIntervalMs = null
   try { kind === 'source' ? await loadSourceMetadata() : await loadTargetMetadata() }
   catch (error) { CdcMessage.error(error.message) }
 }
 async function next() {
   if (step.value===0 && (!form.sourceId || !form.targetId)) return CdcMessage.warning('请选择源连接和目标连接')
+  if (step.value===0 && targetMissingDatabase.value) return CdcMessage.warning('目标连接未填写默认数据库，请先在账户中补充')
+  if (step.value===0 && form.pollIntervalMs!=null && form.pollIntervalMs<100) return CdcMessage.warning('轮询间隔不能小于 100 毫秒')
   if (step.value===1 && !form.tables.length) return CdcMessage.warning('请至少选择一张源表')
   if (step.value===1 && form.tables.some(x => !x.targetTable)) return CdcMessage.warning('请为每张源表选择目标表或 Topic')
   if (step.value===2 && form.tables.some(x => !Object.keys(x.columns||{}).length)) return CdcMessage.warning('请完成每张表的字段映射')
@@ -198,7 +206,13 @@ function targetLabel(row){return [row.targetSchema,row.targetTable].filter(Boole
           </div>
           <cdc-form-item v-if="!form.id" label="附加目标订阅"><cdc-select v-model="form.additionalTargetIds" multiple collapse-tags filterable placeholder="可同时选择多个目标连接" style="width:100%"><cdc-option v-for="x in store.targets.filter(x=>x.enabled&&x.id!==form.targetId)" :key="x.id" :label="x.name" :brand="x.targetType" :value="x.id"><DatabaseBrand :type="x.targetType" :label="x.name"/></cdc-option></cdc-select><div class="form-help">附加目标默认复用主目标映射；如需独立映射，请在任务详情的目标订阅中配置。</div></cdc-form-item>
           <cdc-form-item label="同步模式"><div class="mode-control"><cdc-radio-group v-model="form.syncMode" class="sync-mode-group"><cdc-radio-button value="FULL_INCREMENTAL">全量 + 增量</cdc-radio-button><cdc-radio-button value="INCREMENTAL_ONLY">仅增量</cdc-radio-button></cdc-radio-group><div class="form-help">{{form.syncMode==='FULL_INCREMENTAL'?'首次启动先 Upsert 当前数据，再从一致位点消费变化':'首次启动从当前日志位点开始，不写入历史数据'}}</div></div></cdc-form-item>
+          <div v-if="targetMissingDatabase" class="warning-callout">目标连接未填写默认数据库，无法作为同步目标。请先到「数据准备 → 连接账户」补充数据库；同库同步也需要目标连接指向具体数据库。</div>
           <div v-if="source?.dbType==='STARROCKS'" class="warning-callout">StarRocks 作为源端使用主键快照轮询，无法提供 MySQL/SQL Server 等级的严格一致性。</div>
+          <cdc-form-item v-if="source?.dbType==='STARROCKS'" label="轮询间隔（毫秒）">
+            <cdc-input-number v-model="form.pollIntervalMs" :min="100" :max="3600000" :step="100"
+                              placeholder="留空沿用账户配置（默认 500）" style="width:100%"/>
+            <div class="form-help">StarRocks 源按主键快照轮询：间隔越短延迟越低，源库压力越大</div>
+          </cdc-form-item>
         </cdc-form>
       </section>
       <section v-else-if="step===1" class="wizard-section">

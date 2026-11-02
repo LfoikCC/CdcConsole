@@ -4,6 +4,9 @@ public final class Types {
     private Types() {}
     public enum DatabaseType { MYSQL, SQLSERVER, STARROCKS }
     public enum TargetType { MYSQL, SQLSERVER, KAFKA, STARROCKS_STREAM_LOAD }
+    /** 统一数据账户的类型。源与目标不再是两种实体，能力由 {@code AccountCapabilities} 推导。 */
+    public enum AccountType { MYSQL, SQLSERVER, STARROCKS, KAFKA }
+    public enum Capability { SOURCE, TARGET, QUERY }
     public enum Operation { CREATE, UPDATE, DELETE, READ }
     public enum SyncMode { FULL_INCREMENTAL, INCREMENTAL_ONLY }
     public enum TaskStatus { DRAFT, STARTING, SNAPSHOTTING, RUNNING, PAUSED, STOPPED, DEGRADED, FAILED }

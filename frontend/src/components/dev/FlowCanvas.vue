@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import FlowNodeCard from './FlowNodeCard.vue'
+import { needsTwoInputs } from './nodeTypes'
 import {
-  NODE_H, NODE_W, edgePathForNodes, fitView, hasEdge, nodeById, portOut, snap, toWorld, wouldCycle
+  NODE_H, NODE_W, edgePathForNodes, fitView, hasEdge, nodeById, portIn, portOut, snap, toWorld, wouldCycle
 } from './flowGraph'
 
 const props = defineProps({
@@ -51,7 +52,12 @@ function worldPoint(event) {
 function pathOf(edge) {
   const from = nodeById(props.graph, edge.from)
   const to = nodeById(props.graph, edge.to)
-  return from && to ? edgePathForNodes(from, to) : ''
+  if (!from || !to) return ''
+  // 双输入节点：按入边顺序决定落到上端口还是下端口，和后台「先连的为左」保持一致
+  const incoming = edges.value.filter(item => item.to === edge.to)
+  const index = Math.max(0, incoming.findIndex(item => item.from === edge.from))
+  const total = needsTwoInputs(to) ? 2 : 1
+  return edgePathForNodes(from, to, portIn(to, index, total))
 }
 
 // ---------------------------------------------------------------- dragging

@@ -1,6 +1,6 @@
 import {
-  ArrowUpDown, Calculator, Code2, Columns3, Copy, Database, Eraser, ListFilter,
-  Merge, Replace, Sigma, SlidersHorizontal, Upload
+  ArrowUpDown, Calculator, Code2, Columns3, Combine, Copy, Database, DatabaseZap, Eraser, GitMerge,
+  Layers, ListFilter, Merge, Replace, Save, Sigma, SlidersHorizontal, SquareCode, Table2, TableProperties, Upload
 } from 'lucide-vue-next'
 
 export const OPERATOR_LABELS = {
@@ -12,10 +12,13 @@ export const OPERATOR_LABELS = {
   CALCULATE: '添加计算列',
   REPLACE_VALUE: '值替换',
   REPLACE_NULL: 'Null 值替换',
-  MERGE_COLUMNS: '合并列'
+  MERGE_COLUMNS: '合并列',
+  UNION: '行拼接',
+  JOIN: '关联数据',
+  PIVOT: '行转列',
+  UNPIVOT: '列转行',
+  SQL: 'SQL 算子'
 }
-
-export const OPERATOR_OPTIONS = Object.entries(OPERATOR_LABELS).map(([value, label]) => ({ value, label }))
 
 /** 每个算子一个图标：九个算子长得一模一样时，画布上根本认不出哪张卡在做什么。 */
 export const OPERATOR_ICONS = {
@@ -27,7 +30,19 @@ export const OPERATOR_ICONS = {
   CALCULATE: Calculator,
   REPLACE_VALUE: Replace,
   REPLACE_NULL: Eraser,
-  MERGE_COLUMNS: Merge
+  MERGE_COLUMNS: Merge,
+  UNION: Combine,
+  JOIN: GitMerge,
+  PIVOT: TableProperties,
+  UNPIVOT: Table2,
+  SQL: SquareCode
+}
+
+/** 需要两个上游的算子：画布上要画第二个入端口，校验器要求恰好两条入边。 */
+export const TWO_INPUT_OPERATORS = ['UNION', 'JOIN']
+
+export function needsTwoInputs(node) {
+  return node?.type === 'OPERATOR' && TWO_INPUT_OPERATORS.includes(node.config?.operator)
 }
 
 /**
@@ -49,7 +64,14 @@ export const OPERATOR_DEFAULTS = {
   REPLACE_NULL: () => ({ operator: 'REPLACE_NULL', fills: [] }),
   MERGE_COLUMNS: () => ({
     operator: 'MERGE_COLUMNS', columns: [], separator: '-', alias: '', dropSources: false
-  })
+  }),
+  UNION: () => ({ operator: 'UNION', mode: 'ALL' }),
+  JOIN: () => ({ operator: 'JOIN', joinType: 'INNER', keys: [] }),
+  PIVOT: () => ({
+    operator: 'PIVOT', groupBy: [], pivotColumn: '', valueColumn: '', aggregate: 'SUM', values: []
+  }),
+  UNPIVOT: () => ({ operator: 'UNPIVOT', columns: [], nameColumn: '字段', valueColumn: '值' }),
+  SQL: () => ({ operator: 'SQL', sql: '' })
 }
 
 export function operatorDefaults(operator) {
@@ -106,6 +128,22 @@ export const NODE_TYPES = {
     tone: 'sink',
     defaults: () => ({ targetId: null, table: '', mode: 'OVERWRITE', targetColumns: [], keyColumns: [] }),
     subtitle: config => `${config.database ? config.database + '.' : ''}${config.table || '未选择表'} · ${MODE_LABELS[config.mode] || '覆盖'}`
+  },
+  DATASET_INPUT: {
+    label: '数据集输入',
+    icon: Layers,
+    tone: 'src',
+    defaults: () => ({ datasetId: null }),
+    subtitle: config => (config.datasetId ? `数据集 #${config.datasetId}` : '未选择数据集')
+  },
+  DATASET_OUTPUT: {
+    label: '数据集输出',
+    icon: Save,
+    tone: 'sink',
+    defaults: () => ({ datasetId: null, mode: 'OVERWRITE' }),
+    subtitle: config => (config.datasetId
+      ? `数据集 #${config.datasetId} · ${MODE_LABELS[config.mode] || '覆盖'}`
+      : '未选择数据集')
   }
 }
 
@@ -114,31 +152,37 @@ export const NODE_TYPE_OPTIONS = Object.entries(NODE_TYPES).map(([value, meta]) 
   label: meta.label
 }))
 
+/** 算子的功能分组：14 个算子按「列 / 行 / 聚合 / 多表 / 高级」归类，便于在 2 列栅格里快速定位。 */
+const OPERATOR_GROUPS = [
+  { label: '列编辑', operators: ['PROJECT', 'CALCULATE', 'MERGE_COLUMNS', 'REPLACE_VALUE', 'REPLACE_NULL'] },
+  { label: '行处理', operators: ['FILTER', 'SORT', 'DEDUP'] },
+  { label: '聚合', operators: ['AGGREGATE', 'PIVOT', 'UNPIVOT'] },
+  { label: '多表', operators: ['UNION', 'JOIN'] },
+  { label: '高级', operators: ['SQL'] }
+]
+
 /**
- * 调色板：输入 2 项、算子 9 项、输出 1 项。
+ * 调色板：输入/输出 + 五个算子分组，共 6 组 19 项。
  *
  * <p>节点类型仍是 OPERATOR，算子只体现在 config.operator 上——图模型与执行器都不用改。
  */
 export const PALETTE_GROUPS = [
   {
-    label: '输入',
+    label: '输入/输出',
     items: [
       { type: 'DB_INPUT', label: NODE_TYPES.DB_INPUT.label, icon: Database, tone: 'src' },
-      { type: 'SQL_INPUT', label: NODE_TYPES.SQL_INPUT.label, icon: Code2, tone: 'sql' }
+      { type: 'SQL_INPUT', label: NODE_TYPES.SQL_INPUT.label, icon: Code2, tone: 'sql' },
+      { type: 'DATASET_INPUT', label: NODE_TYPES.DATASET_INPUT.label, icon: Layers, tone: 'src' },
+      { type: 'DB_OUTPUT', label: NODE_TYPES.DB_OUTPUT.label, icon: Upload, tone: 'sink' },
+      { type: 'DATASET_OUTPUT', label: NODE_TYPES.DATASET_OUTPUT.label, icon: Save, tone: 'sink' }
     ]
   },
-  {
-    label: '算子',
-    items: Object.entries(OPERATOR_LABELS).map(([operator, label]) => ({
-      type: 'OPERATOR', operator, label, icon: OPERATOR_ICONS[operator], tone: 'op'
+  ...OPERATOR_GROUPS.map(group => ({
+    label: group.label,
+    items: group.operators.map(operator => ({
+      type: 'OPERATOR', operator, label: OPERATOR_LABELS[operator], icon: OPERATOR_ICONS[operator], tone: 'op'
     }))
-  },
-  {
-    label: '输出',
-    items: [
-      { type: 'DB_OUTPUT', label: NODE_TYPES.DB_OUTPUT.label, icon: Upload, tone: 'sink' }
-    ]
-  }
+  }))
 ]
 
 export function metaOf(type) {

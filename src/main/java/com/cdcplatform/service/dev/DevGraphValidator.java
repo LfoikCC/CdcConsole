@@ -33,13 +33,17 @@ public class DevGraphValidator {
     public static final String TYPE_SQL_INPUT = "SQL_INPUT";
     public static final String TYPE_OPERATOR = "OPERATOR";
     public static final String TYPE_DB_OUTPUT = "DB_OUTPUT";
+    public static final String TYPE_DATASET_INPUT = "DATASET_INPUT";
+    public static final String TYPE_DATASET_OUTPUT = "DATASET_OUTPUT";
 
-    private static final Set<String> TYPES = Set.of(TYPE_DB_INPUT, TYPE_SQL_INPUT, TYPE_OPERATOR, TYPE_DB_OUTPUT);
+    private static final Set<String> TYPES = Set.of(TYPE_DB_INPUT, TYPE_SQL_INPUT, TYPE_OPERATOR,
+            TYPE_DB_OUTPUT, TYPE_DATASET_INPUT, TYPE_DATASET_OUTPUT);
 
     /** 与前端调色板、DevOperatorSql 的分发保持一致；大小写不敏感，统一按大写比对。 */
     private static final Set<String> OPERATORS = Set.of(
             "PROJECT", "FILTER", "SORT", "DEDUP",
-            "AGGREGATE", "CALCULATE", "REPLACE_VALUE", "REPLACE_NULL", "MERGE_COLUMNS");
+            "AGGREGATE", "CALCULATE", "REPLACE_VALUE", "REPLACE_NULL", "MERGE_COLUMNS",
+            "UNION", "JOIN", "PIVOT", "UNPIVOT", "SQL");
 
     private static final Set<String> AGG_FUNCTIONS = Set.of("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX");
 
@@ -100,23 +104,31 @@ public class DevGraphValidator {
             downstream.get(edge.from()).add(edge.to());
         }
 
-        boolean hasOutput = byId.values().stream().anyMatch(n -> TYPE_DB_OUTPUT.equals(n.type()));
+        boolean hasOutput = byId.values().stream()
+                .anyMatch(n -> TYPE_DB_OUTPUT.equals(n.type()) || TYPE_DATASET_OUTPUT.equals(n.type()));
         if (!hasOutput) {
             errors.add(new Issue(null, "graph", "数据流缺少数据库输出节点，运行不会产生任何结果"));
         }
 
         for (DevNode node : byId.values()) {
             int degree = inDegree.getOrDefault(node.id(), 0);
-            boolean input = TYPE_DB_INPUT.equals(node.type()) || TYPE_SQL_INPUT.equals(node.type());
+            boolean input = TYPE_DB_INPUT.equals(node.type()) || TYPE_SQL_INPUT.equals(node.type())
+                    || TYPE_DATASET_INPUT.equals(node.type());
+            int required = requiredInputs(node);
             if (input && degree > 0) {
                 errors.add(new Issue(node.id(), "edge", "输入节点 " + node.id() + " 不能有上游"));
             }
             if (!input && degree == 0) {
                 errors.add(new Issue(node.id(), "edge", "节点 " + node.id() + " 缺少上游输入"));
             }
-            if (!input && degree > 1) {
+            if (!input && degree > required) {
+                errors.add(new Issue(node.id(), "edge", required == 2
+                        ? "节点 " + node.id() + " 需要两个上游（左、右），当前有 " + degree + " 条入边"
+                        : "节点 " + node.id() + " 有多个上游；每个节点只接受一条入边"));
+            }
+            if (!input && required == 2 && degree == 1) {
                 errors.add(new Issue(node.id(), "edge",
-                        "节点 " + node.id() + " 有多个上游；本阶段每个节点只接受一条入边"));
+                        "节点 " + node.id() + " 需要两个上游（左、右），当前只有 1 条入边"));
             }
             if (forExecution) {
                 validateConfig(node, errors);
@@ -214,6 +226,14 @@ public class DevGraphValidator {
                 }
                 if ("UPSERT".equals(String.valueOf(mode)) && asList(config.get("keyColumns")).isEmpty()) {
                     errors.add(new Issue(node.id(), "keyColumns", "按主键 upsert 需要至少一个主键列"));
+                }
+            }
+            case TYPE_DATASET_INPUT -> requireNumber(config, "datasetId", node, errors, "请选择数据集");
+            case TYPE_DATASET_OUTPUT -> {
+                requireNumber(config, "datasetId", node, errors, "请选择数据集");
+                Object mode = config.get("mode");
+                if (mode != null && !Set.of("OVERWRITE", "APPEND").contains(String.valueOf(mode))) {
+                    errors.add(new Issue(node.id(), "mode", "数据集写入只支持覆盖或追加"));
                 }
             }
             default -> {
@@ -336,6 +356,62 @@ public class DevGraphValidator {
                 }
                 requireText(config, "alias", node, errors, "请填写合并后的列名");
             }
+            case "UNION" -> {
+                String mode = textOf(config.get("mode"));
+                if (mode != null && !Set.of("ALL", "DISTINCT").contains(mode.toUpperCase(Locale.ROOT))) {
+                    errors.add(new Issue(node.id(), "mode", "不支持的拼接方式：" + mode));
+                }
+            }
+            case "JOIN" -> {
+                String type = textOf(config.get("joinType"));
+                if (type != null && !Set.of("INNER", "LEFT", "RIGHT").contains(type.toUpperCase(Locale.ROOT))) {
+                    errors.add(new Issue(node.id(), "joinType", "不支持的关联类型：" + type));
+                }
+                List<Object> keys = asList(config.get("keys"));
+                if (keys.isEmpty()) {
+                    errors.add(new Issue(node.id(), "keys", "关联数据至少需要一个关联键"));
+                    return;
+                }
+                for (Object raw : keys) {
+                    if (!(raw instanceof Map<?, ?> key)) {
+                        continue;
+                    }
+                    if (textOf(key.get("left")) == null || textOf(key.get("right")) == null) {
+                        errors.add(new Issue(node.id(), "keys", "关联键需要同时指定左表和右表字段"));
+                    }
+                }
+            }
+            case "PIVOT" -> {
+                requireText(config, "pivotColumn", node, errors, "行转列需要指定「转为列」的字段");
+                requireText(config, "valueColumn", node, errors, "行转列需要指定「取值」字段");
+                if (asList(config.get("values")).isEmpty()) {
+                    errors.add(new Issue(node.id(), "values", "行转列至少需要一个列值"));
+                }
+                String aggregate = textOf(config.get("aggregate"));
+                if (aggregate != null
+                        && !Set.of("SUM", "COUNT", "AVG", "MIN", "MAX").contains(aggregate.toUpperCase(Locale.ROOT))) {
+                    errors.add(new Issue(node.id(), "aggregate", "不支持的聚合函数：" + aggregate));
+                }
+            }
+            case "UNPIVOT" -> {
+                long valid = asList(config.get("columns")).stream()
+                        .filter(item -> textOf(item) != null).count();
+                if (valid == 0) {
+                    errors.add(new Issue(node.id(), "columns", "列转行至少需要一个字段"));
+                }
+            }
+            case "SQL" -> {
+                String sql = textOf(config.get("sql"));
+                if (sql == null) {
+                    errors.add(new Issue(node.id(), "sql", "请填写 SQL"));
+                } else if (!sql.contains("{{input}}")) {
+                    errors.add(new Issue(node.id(), "sql", "SQL 需要用 {{input}} 引用上游临时表"));
+                } else if (sql.contains(";")) {
+                    errors.add(new Issue(node.id(), "sql", "SQL 算子只能包含一条查询语句"));
+                } else if (!DevNodeReader.isReadOnlyQuery(sql.replace("{{input}}", "t"))) {
+                    errors.add(new Issue(node.id(), "sql", "SQL 算子只支持 SELECT 或 WITH 查询"));
+                }
+            }
             default -> {
                 // PROJECT / SORT / DEDUP：空配置有明确兜底（透传 / 上游顺序 / 全行去重），不拦
             }
@@ -348,6 +424,19 @@ public class DevGraphValidator {
         }
         String text = String.valueOf(value).trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /** 入边数量要求：输入节点 0，输出节点 1，双输入算子 2，其余 1。 */
+    private static int requiredInputs(DevNode node) {
+        if (TYPE_DB_INPUT.equals(node.type()) || TYPE_SQL_INPUT.equals(node.type())
+                || TYPE_DATASET_INPUT.equals(node.type())) {
+            return 0;
+        }
+        if (TYPE_DB_OUTPUT.equals(node.type()) || TYPE_DATASET_OUTPUT.equals(node.type())) {
+            return 1;
+        }
+        Object operator = node.configOrEmpty().get("operator");
+        return DevOperatorSql.isTwoInput(operator == null ? null : String.valueOf(operator)) ? 2 : 1;
     }
 
     private void requireText(Map<String, Object> config, String field, DevNode node,

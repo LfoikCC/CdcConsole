@@ -1,8 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowRightLeft, Check, LayoutGrid, Workflow } from 'lucide-vue-next'
-import { identity, roleNames } from '../auth'
+import { ArrowRightLeft, Check, DatabaseZap, LayoutGrid, Settings, Workflow } from 'lucide-vue-next'
+import { can, identity, roleNames } from '../auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -11,12 +11,19 @@ const emit = defineEmits(['profile', 'password', 'signout'])
 
 const user = computed(() => identity.user)
 const initial = computed(() => (user.value?.name || user.value?.username || '?').trim().charAt(0).toUpperCase())
-const currentApp = computed(() => (route.path.startsWith('/dev') ? 'dev' : 'sync'))
+const currentApp = computed(() => (route.path.startsWith('/dev') ? 'dev'
+  : route.path.startsWith('/prep') ? 'prep'
+  : route.path === '/settings' ? 'settings' : 'sync'))
 
+// 系统设置和三个工作区并列，排在最后；只有管理员可见
 const apps = [
   { id: 'sync', label: '实时同步', icon: ArrowRightLeft, to: '/tasks' },
-  { id: 'dev', label: '数据开发', icon: Workflow, to: '/dev/flows' }
+  { id: 'dev', label: '数据开发', icon: Workflow, to: '/dev/flows' },
+  { id: 'prep', label: '数据准备', icon: DatabaseZap, to: '/prep/datasets' },
+  { id: 'settings', label: '系统设置', icon: Settings, to: '/settings', admin: true }
 ]
+
+const visibleApps = computed(() => apps.filter(app => !app.admin || can('admin')))
 
 function open(app) {
   router.push(app.to)
@@ -40,7 +47,7 @@ function open(app) {
     <div class="as-divider"/>
 
     <div class="as-label">应用</div>
-    <button v-for="app in apps" :key="app.id" role="menuitem" class="as-app" @click="open(app)">
+    <button v-for="app in visibleApps" :key="app.id" role="menuitem" class="as-app" @click="open(app)">
       <component :is="app.icon" :size="16"/>
       <span>{{ app.label }}</span>
       <Check v-if="currentApp === app.id" :size="14" class="as-check"/>

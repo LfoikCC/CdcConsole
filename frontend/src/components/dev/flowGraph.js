@@ -3,8 +3,8 @@
  *
  * 节点尺寸是常量而不是测量 DOM 得到的：坐标与渲染彻底解耦，fitView、单测和持久化才能用同一套数字。
  */
-export const NODE_W = 184
-export const NODE_H = 60
+export const NODE_W = 80
+export const NODE_H = 64
 export const GRID = 8
 
 export function snap(value) {
@@ -15,8 +15,10 @@ export function portOut(node) {
   return { x: node.x + NODE_W, y: node.y + NODE_H / 2 }
 }
 
-export function portIn(node) {
-  return { x: node.x, y: node.y + NODE_H / 2 }
+export function portIn(node, index = 0, total = 1) {
+  // 双输入节点把入端口拆成上下两个；单输入仍在正中
+  const ratio = total > 1 ? (index === 0 ? 0.32 : 0.68) : 0.5
+  return { x: node.x, y: node.y + NODE_H * ratio }
 }
 
 /** 三次贝塞尔：控制点横向外扩。
@@ -31,8 +33,8 @@ export function edgePath(from, to) {
   return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y}, ${to.x - dx} ${to.y}, ${to.x} ${to.y}`
 }
 
-export function edgePathForNodes(fromNode, toNode) {
-  return edgePath(portOut(fromNode), portIn(toNode))
+export function edgePathForNodes(fromNode, toNode, inPoint) {
+  return edgePath(portOut(fromNode), inPoint || portIn(toNode))
 }
 
 export function nodeById(graph, id) {
@@ -76,6 +78,14 @@ export function hasEdge(graph, from, to) {
 export function upstreamOf(graph, id) {
   const edge = (graph?.edges || []).find(item => item.to === id)
   return edge ? nodeById(graph, edge.from) : null
+}
+
+/** 按连线顺序返回全部上游节点；双输入算子靠这个顺序区分左、右。 */
+export function upstreamNodesOf(graph, id) {
+  return (graph?.edges || [])
+    .filter(edge => edge.to === id)
+    .map(edge => nodeById(graph, edge.from))
+    .filter(Boolean)
 }
 
 export function descendantsOf(graph, id) {

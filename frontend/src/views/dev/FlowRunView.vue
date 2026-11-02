@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api } from '../../api'
+import { CdcMessage, CdcMessageBox } from '../../components/ui/feedback'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +14,7 @@ const run = ref(null)
 const nodes = ref([])
 const loading = ref(true)
 const error = ref(null)
+const canceling = ref(false)
 let timer = null
 
 /** 把 ISO 时间压成 `YYYY-MM-DD HH:mm:ss`：原始串带微秒与时区，在窄栏里会折行。 */
@@ -23,7 +25,7 @@ function formatTime(value) {
 const labels = { RUNNING: '运行中', SUCCEEDED: '成功', FAILED: '失败', CANCELED: '已取消', PENDING: '等待中' }
 const classes = { RUNNING: 'status-running', SUCCEEDED: 'status-running', FAILED: 'status-failed', CANCELED: 'status-paused', PENDING: 'status-starting' }
 
-const isRunning = computed(() => run.value?.status === 'RUNNING')
+const isRunning = computed(() => run.value?.status === 'RUNNING' || run.value?.status === 'PENDING')
 
 async function load() {
   try {
@@ -31,7 +33,7 @@ async function load() {
     run.value = body.run
     nodes.value = body.nodes || []
     error.value = null
-    if (run.value?.status !== 'RUNNING' && timer) {
+    if (!isRunning.value && timer) {
       clearInterval(timer)
       timer = null
     }
@@ -45,10 +47,28 @@ async function load() {
 onMounted(async () => {
   await load()
   // 只在运行中轮询：跑完就停，避免无意义的请求
-  if (run.value?.status === 'RUNNING') timer = setInterval(load, 1000)
+  if (isRunning.value) timer = setInterval(load, 1000)
 })
 
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
+
+async function cancelRun() {
+  try {
+    await CdcMessageBox.confirm('取消会在当前批次结束后停止，已写入目标的数据不会回滚。确定取消？', '取消运行', { type: 'warning' })
+  } catch {
+    return
+  }
+  canceling.value = true
+  try {
+    await api(`/flows/${flowId}/runs/${runId}/cancel`, { method: 'POST' })
+    CdcMessage.success('已发送取消请求')
+    await load()
+  } catch (e) {
+    CdcMessage.error(e.message)
+  } finally {
+    canceling.value = false
+  }
+}
 </script>
 
 <template>
@@ -67,6 +87,9 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
             </span>
             <span v-if="isRunning" class="dim">（每秒刷新）</span>
           </p>
+        </div>
+        <div v-if="isRunning" class="header-actions">
+          <cdc-button type="danger" :loading="canceling" @click="cancelRun">取消运行</cdc-button>
         </div>
       </header>
 

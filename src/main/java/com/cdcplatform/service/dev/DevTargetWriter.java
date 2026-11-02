@@ -60,6 +60,13 @@ public class DevTargetWriter {
     public WriteResult write(TargetConfig target, String table, WriteMode mode,
                              List<ColumnMeta> sourceColumns, String sourceTable,
                              List<String> targetColumns, List<String> keyColumns) {
+        return write(target, table, mode, sourceColumns, sourceTable, targetColumns, keyColumns, () -> { });
+    }
+
+    /** 带取消检查点的写入：每批 commit 后调用 checkpoint，抛异常即回滚当前批并终止。 */
+    public WriteResult write(TargetConfig target, String table, WriteMode mode,
+                             List<ColumnMeta> sourceColumns, String sourceTable,
+                             List<String> targetColumns, List<String> keyColumns, Runnable checkpoint) {
         if (target.targetType() == TargetType.KAFKA) {
             throw new IllegalArgumentException("数据库输出节点不能使用 Kafka 目标");
         }
@@ -120,11 +127,13 @@ public class DevTargetWriter {
                         write.executeBatch();
                         out.commit();
                         pending = 0;
+                        checkpoint.run();
                     }
                 }
                 if (pending > 0) {
                     write.executeBatch();
                     out.commit();
+                    checkpoint.run();
                 }
             } catch (SQLException | RuntimeException e) {
                 out.rollback();

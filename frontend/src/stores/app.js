@@ -3,13 +3,14 @@ import { api, getAll } from '../api'
 import { AuthenticatedSseClient } from '../sseClient'
 
 export const useAppStore = defineStore('app', {
-  state: () => ({ sources: [], targets: [], openAlerts: 0, connected: false }),
+  state: () => ({ sources: [], targets: [], accounts: [], openAlerts: 0, connected: false }),
   actions: {
     disconnectRuntime() { this.runtime?.stop(); this.runtime = null; this.connected = false },
     async loadConnections() {
       [this.sources, this.targets] = await Promise.all([getAll('/sources'), getAll('/targets')])
     },
-    async loadAlerts() { this.openAlerts = (await api('/alerts?status=OPEN')).length },
+    async loadAccounts() { this.accounts = await getAll('/accounts') },
+    async loadAlerts() { this.openAlerts = (await api('/alerts/counts')).open || 0 },
     connectRuntime() {
       if (this.runtime) return
       this.runtime = new AuthenticatedSseClient({

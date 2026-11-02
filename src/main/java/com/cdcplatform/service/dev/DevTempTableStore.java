@@ -31,6 +31,7 @@ import java.util.List;
  * </ul>
  */
 @Service
+@org.springframework.context.annotation.Primary
 public class DevTempTableStore {
 
     private static final Logger log = LoggerFactory.getLogger(DevTempTableStore.class);
@@ -59,6 +60,9 @@ public class DevTempTableStore {
      */
     @PostConstruct
     public void cleanupOnStartup() {
+        if (!props.isCleanupOnStartup()) {
+            return;
+        }
         try {
             int dropped = dropAll();
             if (dropped > 0) {
@@ -271,9 +275,135 @@ public class DevTempTableStore {
         }
     }
 
-    /** 只执行一条 DDL/DML，用于「删除重建」这类操作。 */
-    public void execute(String sql) {
+    /**
+     * 批量写入外部数据（Excel 导入用）。{@code rows} 的顺序必须与 {@code columns} 一致。
+     *
+     * <p>与 {@link #insert} 的区别是不依赖 ResultSet，调用方可以边解析边喂行。
+     */
+    public long insertRows(String table, List<ColumnMeta> columns, Iterable<List<Object>> rows, int maxRows) {
+        if (columns.isEmpty()) {
+            throw new IllegalStateException("数据集没有列，无法写入");
+        }
+        int batchSize = Math.max(1, props.getBatchSize());
+        String sql = insertSql(table, columns.size());
+        long written = 0;
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (List<Object> row : rows) {
+                    if (written >= maxRows) {
+                        throw new IllegalStateException("数据集超过 " + maxRows + " 行上限");
+                    }
+                    written++;
+                    statement.setLong(1, written);
+                    for (int i = 0; i < columns.size(); i++) {
+                        statement.setObject(i + 2, row.get(i));
+                    }
+                    statement.addBatch();
+                    if (written % batchSize == 0) {
+                        statement.executeBatch();
+                        connection.commit();
+                    }
+                }
+                statement.executeBatch();
+                connection.commit();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("写入数据集失败：" + e.getMessage(), e);
+        }
+        return written;
+    }
+
+    public record SqlResult(String table, long rows, List<ColumnMeta> columns) {
+    }
+
+    /**
+     * 为 SQL 算子建一个带逻辑列名的视图。
+     *
+     * <p>物理列是 {@code C1..Cn}，用户不可能按编号写 SQL。视图把列名映射回真实名称，
+     * 并统一转成大写——H2 会把未加引号的标识符折成大写，这样 {@code SELECT id} 正好命中 {@code "ID"}。
+     */
+    public String createView(String viewName, String sourceTable, List<ColumnMeta> columns) {
+        StringBuilder sql = new StringBuilder("CREATE OR REPLACE VIEW ").append(viewName).append(" AS SELECT ");
+        for (int i = 0; i < columns.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            ColumnMeta column = columns.get(i);
+            sql.append(quote(column.physical())).append(" AS ")
+                    .append(quote(column.label().toUpperCase(java.util.Locale.ROOT)));
+        }
+        sql.append(" FROM ").append(sourceTable);
+        execute(sql.toString());
+        return viewName;
+    }
+
+    public void dropView(String viewName) {
+        execute("DROP VIEW IF EXISTS " + viewName);
+    }
+
+    public SqlResult runSql(String table, String sql, int maxRows) {
+        return runSql(table, sql, maxRows, List.of());
+    }
+
+    /**
+     * 执行一段自定义 SELECT 并落成临时表，列从结果集元数据推断（SQL 算子用）。
+     *
+     * <p>先跑一次 {@code WHERE 1=0} 只拿列，再正式执行：避免在打开着结果集的同时对同一张表做 DDL。
+     * {@code known} 用来把视图的大写列名还原成用户看到的原始列名。
+     */
+    public SqlResult runSql(String table, String sql, int maxRows, List<ColumnMeta> known) {
+        List<ColumnMeta> columns = describe(sql, known);
+        if (columns.isEmpty()) {
+            throw new IllegalStateException("SQL 没有返回任何列");
+        }
+        create(table, columns);
         try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rs = statement.executeQuery()) {
+            long rows = insert(table, columns.size(), rs, maxRows);
+            return new SqlResult(table, rows, columns);
+        } catch (SQLException e) {
+            throw new IllegalStateException("SQL 算子执行失败：" + e.getMessage(), e);
+        }
+    }
+
+    private List<ColumnMeta> describe(String sql, List<ColumnMeta> known) {
+        String trimmed = sql.trim();
+        while (trimmed.endsWith(";")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        String probe = "SELECT * FROM (" + trimmed + ") x WHERE 1=0";
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(probe);
+             ResultSet rs = statement.executeQuery()) {
+            ResultSetMetaData meta = rs.getMetaData();
+            List<ColumnMeta> columns = new ArrayList<>();
+            for (int i = 1; i <= meta.getColumnCount(); i++) {
+                String label = meta.getColumnLabel(i);
+                if (label == null || label.isBlank()) {
+                    label = "col_" + i;
+                }
+                columns.add(new ColumnMeta(i, restoreLabel(label, known),
+                        h2TypeOf(meta.getColumnType(i))));
+            }
+            return columns;
+        } catch (SQLException e) {
+            throw new IllegalStateException("SQL 算子执行失败：" + e.getMessage(), e);
+        }
+    }
+
+    private static String restoreLabel(String label, List<ColumnMeta> known) {
+        for (ColumnMeta column : known) {
+            if (column.label().equalsIgnoreCase(label)) {
+                return column.label();
+            }
+        }
+        return label;
+    }
+
+    /** 只执行一条 DDL/DML，用于「删除重建」这类操作。 */
+    public void execute(String sql) {        try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.execute(sql);
         } catch (SQLException e) {
@@ -297,18 +427,29 @@ public class DevTempTableStore {
     /** 清空整个 DEV_TMP，返回删除的表数。 */
     public int dropAll() {
         List<String> tables = new ArrayList<>();
+        List<String> views = new ArrayList<>();
         String schema = schema();
         try (Connection connection = dataSource.getConnection()) {
             try (Statement statement = connection.createStatement()) {
                 statement.execute(ensureColumnCatalog());
             }
             try (PreparedStatement statement = connection.prepareStatement(
-                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?")) {
+                    "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?")) {
                 statement.setString(1, schema.toUpperCase());
                 try (ResultSet rs = statement.executeQuery()) {
                     while (rs.next()) {
-                        tables.add(rs.getString(1));
+                        String name = rs.getString(1);
+                        if ("VIEW".equalsIgnoreCase(rs.getString(2))) {
+                            views.add(name);
+                        } else {
+                            tables.add(name);
+                        }
                     }
+                }
+            }
+            for (String view : views) {
+                try (Statement drop = connection.createStatement()) {
+                    drop.execute("DROP VIEW IF EXISTS " + quote(schema) + "." + quote(view));
                 }
             }
             for (String table : tables) {

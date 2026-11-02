@@ -5,7 +5,6 @@ import AuditView from './views/AuditView.vue'
 import TasksView from './views/TasksView.vue'
 import MonitorView from './views/MonitorView.vue'
 import TaskDetailView from './views/TaskDetailView.vue'
-import ConnectionsView from './views/ConnectionsView.vue'
 import AlertsView from './views/AlertsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import TaskWizardPage from './views/TaskWizardPage.vue'
@@ -21,10 +20,17 @@ const router = createRouter({
     { path: '/tasks/new', component: TaskWizardPage, meta: { title: '新建同步任务', requiresAdmin: true } },
     { path: '/tasks/:id/edit', component: TaskWizardPage, meta: { title: '编辑同步任务', requiresAdmin: true } },
     { path: '/tasks/:id', component: TaskDetailView, meta: { title: '任务详情' } },
-    { path: '/connections', redirect: '/connections/sources' },
-    { path: '/connections/:kind(sources|targets)', component: ConnectionsView, meta: { title: '数据连接' } },
+    // 旧地址：数据连接已并入数据准备的数据账户
+    { path: '/connections', redirect: '/prep/accounts' },
+    { path: '/connections/:kind(sources|targets)', redirect: '/prep/accounts' },
     { path: '/alerts', component: AlertsView, meta: { title: '告警中心' } },
     { path: '/settings', component: SettingsView, meta: { title: '系统设置', requiresAdmin: true } },
+
+    // 数据准备
+    { path: '/prep', redirect: '/prep/datasets' },
+    { path: '/prep/datasets', component: () => import('./views/prep/DatasetsView.vue'), meta: { title: '数据集' } },
+    { path: '/prep/datasets/new', component: () => import('./views/prep/DatasetWizard.vue'), meta: { title: '新建数据集', requiresAdmin: true } },
+    { path: '/prep/accounts', component: () => import('./views/prep/AccountsView.vue'), meta: { title: '数据账户' } },
 
     // 数据开发：`new` 必须排在 `:id` 之前，否则会被当成 id 解析
     { path: '/dev', redirect: '/dev/flows' },

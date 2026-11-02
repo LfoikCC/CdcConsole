@@ -2,6 +2,8 @@ package com.cdcplatform.repository;
 
 import com.cdcplatform.model.*;
 import com.cdcplatform.model.Types.*;
+import com.cdcplatform.service.account.AccountAdapter;
+import com.cdcplatform.service.account.AccountCapabilities;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,82 +25,79 @@ public class ConfigRepository {
     private final JdbcClient jdbc;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper json;
+    private final AccountRepository accounts;
+    private final AccountAdapter adapter = new AccountAdapter();
 
     public ConfigRepository(JdbcClient jdbc, JdbcTemplate jdbcTemplate, ObjectMapper json) {
         this.jdbc = jdbc; this.jdbcTemplate = jdbcTemplate; this.json = json;
+        this.accounts = new AccountRepository(jdbc, json);
     }
 
     public List<SourceConfig> sources() {
-        return jdbc.sql("SELECT * FROM cdc_source ORDER BY id").query((rs, n) -> new SourceConfig(
-                rs.getLong("id"), rs.getString("name"), DatabaseType.valueOf(rs.getString("db_type")),
-                rs.getString("host"), rs.getInt("port"), rs.getString("database_name"),
-                rs.getString("username"), "", rs.getInt("poll_interval_ms"), rs.getBoolean("enabled"),
-                rs.getObject("created_at", OffsetDateTime.class))).list();
+        return accounts.accountsByCapability(Capability.SOURCE, false).stream()
+                .map(adapter::toSource).toList();
     }
 
     public SourceConfig source(long id, boolean includePassword) {
-        return jdbc.sql("SELECT * FROM cdc_source WHERE id=:id").param("id", id).query((rs, n) -> new SourceConfig(
-                rs.getLong("id"), rs.getString("name"), DatabaseType.valueOf(rs.getString("db_type")),
-                rs.getString("host"), rs.getInt("port"), rs.getString("database_name"), rs.getString("username"),
-                includePassword ? rs.getString("password") : "", rs.getInt("poll_interval_ms"), rs.getBoolean("enabled"),
-                rs.getObject("created_at", OffsetDateTime.class))).optional().orElseThrow(() -> notFound("source", id));
+        return adapter.toSource(accounts.account(id, includePassword));
     }
 
     public long addSource(SourceConfig s) {
-        long id = nextId();
-        jdbc.sql("INSERT INTO cdc_source(id,name,db_type,host,port,database_name,username,password,poll_interval_ms,enabled) " +
-                        "VALUES(:id,:name,:type,:host,:port,:db,:user,:password,:interval,:enabled)")
-                .param("id", id).param("name", s.name()).param("type", s.dbType().name()).param("host", s.host())
-                .param("port", s.port()).param("db", s.databaseName()).param("user", s.username())
-                .param("password", s.password()).param("interval", s.pollIntervalMs()).param("enabled", s.enabled()).update();
-        return id;
+        AccountCapabilities.require(adapter.accountType(s.dbType()), Capability.SOURCE, "作为同步源");
+        return accounts.add(adapter.fromSource(s));
     }
 
     public void updateSource(long id, SourceConfig s) {
-        var current = source(id, true);
-        ensureConnectionsEditable("source_id", id);
-        String password = s.password() == null || s.password().isBlank() ? current.password() : s.password();
-        jdbc.sql("UPDATE cdc_source SET name=:name,db_type=:type,host=:host,port=:port,database_name=:db," +
-                        "username=:user,password=:password,poll_interval_ms=:interval,enabled=:enabled WHERE id=:id")
-                .param("id", id).param("name", s.name()).param("type", s.dbType().name()).param("host", s.host())
-                .param("port", s.port()).param("db", s.databaseName()).param("user", s.username())
-                .param("password", password).param("interval", s.pollIntervalMs()).param("enabled", s.enabled()).update();
+        requireEditable(id);
+        AccountCapabilities.require(adapter.accountType(s.dbType()), Capability.SOURCE, "作为同步源");
+        accounts.update(id, adapter.fromSource(s));
     }
 
     public List<TargetConfig> targets() {
-        return jdbc.sql("SELECT * FROM cdc_target ORDER BY id").query((rs, n) -> new TargetConfig(
-                rs.getLong("id"), rs.getString("name"), TargetType.valueOf(rs.getString("target_type")),
-                mask(readMap(rs.getString("config_json"))), rs.getBoolean("enabled"),
-                rs.getObject("created_at", OffsetDateTime.class))).list();
+        return accounts.accountsByCapability(Capability.TARGET, false).stream()
+                .map(account -> adapter.toTarget(account, false)).toList();
     }
 
     public TargetConfig target(long id, boolean includeSecrets) {
-        return jdbc.sql("SELECT * FROM cdc_target WHERE id=:id").param("id", id).query((rs, n) -> new TargetConfig(
-                rs.getLong("id"), rs.getString("name"), TargetType.valueOf(rs.getString("target_type")),
-                includeSecrets ? readMap(rs.getString("config_json")) : mask(readMap(rs.getString("config_json"))),
-                rs.getBoolean("enabled"), rs.getObject("created_at", OffsetDateTime.class)))
-                .optional().orElseThrow(() -> notFound("target", id));
+        return adapter.toTarget(accounts.account(id, includeSecrets), includeSecrets);
     }
 
     public long addTarget(TargetConfig t) {
-        long id = nextId();
-        jdbc.sql("INSERT INTO cdc_target(id,name,target_type,config_json,enabled) VALUES(:id,:name,:type,:config,:enabled)")
-                .param("id", id).param("name", t.name()).param("type", t.targetType().name()).param("config", write(t.config()))
-                .param("enabled", t.enabled()).update();
-        return id;
+        Account account = adapter.fromTarget(t);
+        AccountCapabilities.require(account.accountType(), Capability.TARGET, "作为同步目标");
+        return accounts.add(account);
     }
 
     public void updateTarget(long id, TargetConfig t) {
-        var current = target(id, true);
-        ensureConnectionsEditable("target_id", id);
-        var config = new java.util.HashMap<>(t.config());
-        for (var key : List.of("password", "saslPassword")) {
-            if (!config.containsKey(key) || config.get(key) == null || config.get(key).toString().isBlank() || "******".equals(config.get(key)))
-                if (current.config().containsKey(key)) config.put(key, current.config().get(key));
-        }
-        jdbc.sql("UPDATE cdc_target SET name=:name,target_type=:type,config_json=:config,enabled=:enabled WHERE id=:id")
-                .param("id", id).param("name", t.name()).param("type", t.targetType().name())
-                .param("config", write(config)).param("enabled", t.enabled()).update();
+        requireEditable(id);
+        Account account = adapter.fromTarget(t);
+        AccountCapabilities.require(account.accountType(), Capability.TARGET, "作为同步目标");
+        accounts.update(id, account);
+    }
+
+    public List<Account> accounts() {
+        return accounts.accounts(false);
+    }
+
+    public Account account(long id, boolean includeSecrets) {
+        return accounts.account(id, includeSecrets);
+    }
+
+    public long addAccount(Account account) {
+        return accounts.add(account);
+    }
+
+    public void updateAccount(long id, Account account) {
+        requireEditable(id);
+        accounts.update(id, account);
+    }
+
+    public void deleteAccount(long id) {
+        accounts.delete(id);
+    }
+
+    public Map<String, Long> accountUsage(long id) {
+        return accounts.usage(id);
     }
 
     public List<TableMapping> mappings() {
@@ -241,20 +240,12 @@ public class ConfigRepository {
 
     @Transactional
     public void deleteSource(long id) {
-        source(id, false);
-        long tasks = jdbc.sql("SELECT COUNT(*) FROM sync_task WHERE source_id=:id").param("id", id).query(Long.class).single();
-        if (tasks > 0) throw new IllegalStateException("该源连接仍被 " + tasks + " 个同步任务使用，请先删除相关任务");
-        jdbc.sql("DELETE FROM table_mapping WHERE source_id=:id").param("id", id).update();
-        jdbc.sql("DELETE FROM cdc_source WHERE id=:id").param("id", id).update();
+        accounts.delete(id);
     }
 
     @Transactional
     public void deleteTarget(long id) {
-        target(id, false);
-        long tasks = jdbc.sql("SELECT COUNT(*) FROM sync_task WHERE target_id=:id").param("id", id).query(Long.class).single();
-        if (tasks > 0) throw new IllegalStateException("该目标连接仍被 " + tasks + " 个同步任务使用，请先删除相关任务");
-        jdbc.sql("DELETE FROM table_mapping WHERE target_id=:id").param("id", id).update();
-        jdbc.sql("DELETE FROM cdc_target WHERE id=:id").param("id", id).update();
+        accounts.delete(id);
     }
 
     @Transactional
@@ -264,10 +255,9 @@ public class ConfigRepository {
     }
 
     private long nextId() { return jdbc.sql("SELECT NEXT VALUE FOR cdc_config_id").query(Long.class).single(); }
-    private void ensureConnectionsEditable(String column, long id) {
-        long active = jdbc.sql("SELECT COUNT(*) FROM sync_task WHERE " + column + "=:id AND status NOT IN ('DRAFT','STOPPED')")
-                .param("id", id).query(Long.class).single();
-        if (active > 0) throw new IllegalStateException("连接被运行中的同步任务使用，请先停止相关任务");
+    private void requireEditable(long id) {
+        long active = accounts.activeTasks(id);
+        if (active > 0) throw new IllegalStateException("账户被运行中的同步任务使用，请先停止相关任务");
     }
     private void validateMapping(TableMapping mapping) {
         if (mapping.includeOperation() && !IDENTIFIER.matcher(mapping.operationColumn()).matches())
