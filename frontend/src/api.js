@@ -9,6 +9,23 @@ export async function loadCsrf() {
   return csrfRequest
 }
 export function resetCsrf() { csrfToken = null }
+
+/**
+ * 写操作成功后通知外壳重新取一次计数。
+ *
+ * <p>侧栏的「同步任务 / 告警中心 / 数据账户」数字挂在 App.vue 上，页面里的增删改
+ * 不会自动告诉它，表现就是「列表已经空了，侧栏还挂着 1，F5 才对」。
+ * 放在 api() 里统一触发，比在每个调用点手写事件可靠；预览和校验虽然也是 POST，
+ * 但只读不改数据，跳过。
+ */
+const READ_ONLY_POST = /\/(preview|validate)$/
+let countsTimer = null
+function notifyCountsChanged(path) {
+  if (READ_ONLY_POST.test(path)) return
+  clearTimeout(countsTimer)
+  countsTimer = setTimeout(() => window.dispatchEvent(new Event('cdc-counts-change')), 200)
+}
+
 export async function api(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (!['GET','HEAD','OPTIONS'].includes(method) && !csrfToken) await loadCsrf()
@@ -17,6 +34,7 @@ export async function api(path, options = {}) {
   const headers = { ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...options.headers }
   if (csrfToken && !['GET','HEAD','OPTIONS'].includes(method)) headers['X-CSRF-Token'] = csrfToken
   const response = await fetch(`${base}/api${path}`, { ...options, headers, credentials: 'include', cache: 'no-store' })
+  if (response.ok && !['GET','HEAD','OPTIONS'].includes(method)) notifyCountsChanged(path)
   if (response.status === 204) return null
   if (options.blob && response.ok) return response.blob()
   const body = await response.text()
@@ -45,8 +63,10 @@ export async function upload(path, formData, onProgress) {
     xhr.onload = () => {
       let data = null
       try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch { data = null }
-      if (xhr.status >= 200 && xhr.status < 300) resolve(data)
-      else reject(new Error(data?.error || `上传失败 (${xhr.status})`))
+      if (xhr.status >= 200 && xhr.status < 300) {
+        notifyCountsChanged(path)
+        resolve(data)
+      } else reject(new Error(data?.error || `上传失败 (${xhr.status})`))
     }
     xhr.onerror = () => reject(new Error('上传失败，请检查网络'))
     xhr.send(formData)

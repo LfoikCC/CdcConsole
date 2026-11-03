@@ -44,7 +44,8 @@ public class DevOperatorSql {
             "INTEGER", "BIGINT", "DECIMAL(38,10)", "DOUBLE", "VARCHAR", "DATE", "TIME", "TIMESTAMP", "BOOLEAN");
 
     /** 分组聚合支持的函数；COUNT 的 column 允许为空，表示 COUNT(*)。 */
-    private static final Set<String> AGG_FUNCTIONS = Set.of("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX");
+    /** 聚合函数白名单。数据分析的图表聚合也复用它，避免两处白名单漂移。 */
+    public static final Set<String> AGG_FUNCTIONS = Set.of("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX");
 
     /** 原有四个算子：它们的输出列名沿用上游，不做唯一性检查（避免历史配置被拒）。 */
     private static final Set<String> LEGACY_OPERATORS = Set.of("PROJECT", "FILTER", "SORT", "DEDUP");

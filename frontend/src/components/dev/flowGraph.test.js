@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  NODE_H, NODE_W, bounds, descendantsOf, edgePathForNodes, fitView, hasEdge,
-  nextNodeId, portIn, portOut, snap, toWorld, topologicalOrder, upstreamOf, wouldCycle
+  FIT_MAX_ZOOM, MIN_ZOOM, NODE_H, NODE_W, autoUpstream, bounds, descendantsOf, edgeMidpoint, edgePathForNodes, fitView,
+  hasEdge, nextNodeId, portIn, portOut, snap, toWorld, topologicalOrder, upstreamOf, wouldCycle
 } from './flowGraph'
 
 const node = (id, x, y) => ({ id, type: 'OPERATOR', x, y })
@@ -40,8 +40,28 @@ describe('flowGraph', () => {
     expect(first).toBeLessThanOrEqual(second)
   })
 
+  it('puts the edge midpoint halfway between the ports', () => {
+    // 控制点左右对称，t=0.5 化简后正好是两端点的中点
+    expect(edgeMidpoint({ x: 80, y: 32 }, { x: 300, y: 96 })).toEqual({ x: 190, y: 64 })
+    expect(edgeMidpoint({ x: 0, y: 0 }, { x: 0, y: 0 })).toEqual({ x: 0, y: 0 })
+  })
+
   it('orders a linear graph', () => {
     expect(topologicalOrder(linear)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('picks the nearest upstream node for a dropped node', () => {
+    // a 在 (0,0)、b 在 (600,0)；新节点落在 (200,0)，中心到 a 是 200、到 b 是 400
+    const g = { nodes: [node('a', 0, 0), node('b', 600, 0)], edges: [] }
+    const ghost = node('new', 200, 0)
+    expect(autoUpstream(g, ghost, 260)?.id).toBe('a')
+    // 半径收到 100 就够不着了
+    expect(autoUpstream(g, ghost, 100)).toBeNull()
+  })
+
+  it('never auto-connects to a sink node', () => {
+    const g = { nodes: [{ id: 's', type: 'DB_OUTPUT', x: 120, y: 0 }], edges: [] }
+    expect(autoUpstream(g, node('new', 260, 0), 260)).toBeNull()
   })
 
   it('returns null for a cycle', () => {
@@ -78,10 +98,23 @@ describe('flowGraph', () => {
 
   it('fits the graph into the viewport and centers it', () => {
     const view = fitView([node('a', 0, 0), node('b', 400, 0)], { width: 1000, height: 600 })
-    expect(view.zoom).toBeGreaterThan(0.4)
-    expect(view.zoom).toBeLessThanOrEqual(1.4)
+    // 「适应」不放大：上限就是 100%（与算子菜单里的卡片同尺寸），下限防止缩到看不清
+    expect(view.zoom).toBeGreaterThanOrEqual(MIN_ZOOM)
+    expect(view.zoom).toBeLessThanOrEqual(FIT_MAX_ZOOM)
     // 平移后图应该落在视口中间，而不是贴左上角
     expect(view.panX).toBeGreaterThan(0)
+  })
+
+  it('shrinks for many nodes but never below the floor', () => {
+    const many = Array.from({ length: 60 }, (_, i) => node('n' + i, (i % 10) * 260, Math.floor(i / 10) * 180))
+    const view = fitView(many, { width: 900, height: 600 })
+    expect(view.zoom).toBeLessThan(1)
+    expect(view.zoom).toBeGreaterThanOrEqual(MIN_ZOOM)
+  })
+
+  it('never enlarges a small graph beyond 100%', () => {
+    const view = fitView([node('a', 0, 0)], { width: 2000, height: 1200 })
+    expect(view.zoom).toBe(1)
   })
 
   it('converts client coordinates into world coordinates', () => {

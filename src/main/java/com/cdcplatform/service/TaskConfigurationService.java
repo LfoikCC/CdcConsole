@@ -98,7 +98,7 @@ public class TaskConfigurationService {
                 || target.config().get("database").toString().isBlank());
         if (targetDatabaseMissing) errors.add("目标连接未配置数据库，请先在账户中填写默认数据库");
         Map<String, List<Map<String, Object>>> sourceTables = new HashMap<>();
-        Map<String, Map<String, Object>> targetTables = new HashMap<>();
+        List<Map<String, Object>> targetTables = new ArrayList<>();
         Set<String> topics = new HashSet<>();
         try {
             var probe = connections.probe(source);
@@ -109,7 +109,7 @@ public class TaskConfigurationService {
                 sourceTables.put(database, connections.tables(source, database));
             if (target.targetType() == TargetType.KAFKA) topics.addAll(connections.topics(target));
             else if (!targetDatabaseMissing)
-                for (var table : connections.tables(target)) targetTables.put(tableKey(table), table);
+                for (var table : connections.tables(target)) targetTables.add(table);
         } catch (Exception e) { errors.add(rootMessage(e)); }
 
         var preparedTables = new ArrayList<SyncTaskTable>();
@@ -125,13 +125,18 @@ public class TaskConfigurationService {
                 tableErrors.add("源表和目标表不能是同一张表，否则会形成写入回环");
             }
             Map<String, Object> sourceMeta = findTable(sourceTables.getOrDefault(table.sourceDatabase(), List.of()), table.sourceSchema(), table.sourceTable());
-            Map<String, Object> targetMeta = target.targetType() == TargetType.KAFKA ? null : targetTables.get(key(table.targetSchema(), table.targetTable()));
+            Map<String, Object> targetMeta = target.targetType() == TargetType.KAFKA ? null : findTable(targetTables, table.targetSchema(), table.targetTable());
             List<String> keys = table.keyColumns();
             String fingerprint = table.structureFingerprint();
             if (sourceMeta == null) tableErrors.add("源表不存在");
             else {
                 keys = stringList(sourceMeta.get("primaryKeys"));
-                if (keys.isEmpty()) tableErrors.add("源表缺少主键（元数据未发现 PRIMARY KEY）");
+                if (keys.isEmpty()) {
+                    // 大小写只差一个字母的同名表很常见（Orders / orders），只说「没主键」会让人以为系统读错了
+                    String sibling = caseSibling(sourceTables.getOrDefault(table.sourceDatabase(), List.of()), table.sourceTable());
+                    tableErrors.add("源表缺少主键（元数据未发现 PRIMARY KEY）"
+                            + (sibling == null ? "" : "；库中另有同名表 " + sibling + "，请确认选的是哪一张"));
+                }
                 String current = fingerprint(sourceMeta);
                 if (preserveFingerprint && fingerprint != null && !fingerprint.isBlank() && !fingerprint.equals(current))
                     tableErrors.add("源表结构已变化，请重新打开字段映射并保存");
@@ -232,7 +237,19 @@ public class TaskConfigurationService {
         warnings.add("建议为核对时间字段建立索引，避免增量窗口扫描影响业务库");
     }
 
+    /**
+     * 按 schema + 表名查元数据。
+     *
+     * <p><b>必须先精确匹配</b>：MySQL 在 Linux 上表名区分大小写，`Orders` 与 `orders` 是两张不同的表。
+     * 直接用小写 key 做 findFirst 会把小写表匹配到大写表的元数据上——表现为「明明有主键却说没有」。
+     * 精确匹配落空时才退回忽略大小写，兼容 SQL Server 等大小写不敏感的来源。
+     */
     private Map<String, Object> findTable(List<Map<String, Object>> tables, String schema, String table) {
+        for (Map<String, Object> item : tables) {
+            if (Objects.equals(schema, item.get("schema")) && table.equals(String.valueOf(item.get("table")))) {
+                return item;
+            }
+        }
         return tables.stream().filter(item -> Objects.equals(key(schema, table), tableKey(item))).findFirst().orElse(null);
     }
     private String tableKey(Map<String, Object> table) { return key(Objects.toString(table.get("schema"), null), String.valueOf(table.get("table"))); }
@@ -258,6 +275,23 @@ public class TaskConfigurationService {
         if (value.matches(".*(BINARY|BLOB|VARBINARY).*")) return "BINARY";
         return value;
     }
+    /**
+     * 找同名但仅大小写不同的兄弟表（Orders / orders）。
+     *
+     * <p>MySQL 在 Linux 上默认区分表名大小写，这种成对的表很常见；用户选错时，
+     * 光说「没有主键」会让人以为系统读错了，必须指出另一张表的存在。
+     */
+    private String caseSibling(List<Map<String, Object>> tables, String table) {
+        for (Map<String, Object> candidate : tables) {
+            String name = String.valueOf(candidate.get("table"));
+            List<String> keys = stringList(candidate.get("primaryKeys"));
+            if (!name.equals(table) && name.equalsIgnoreCase(table) && !keys.isEmpty()) {
+                return name + "（主键 " + String.join(", ", keys) + "）";
+            }
+        }
+        return null;
+    }
+
     private String fingerprint(Map<String, Object> metadata) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(json.writeValueAsString(canonical(metadata)).getBytes(StandardCharsets.UTF_8));

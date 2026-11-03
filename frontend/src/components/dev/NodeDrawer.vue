@@ -14,7 +14,9 @@ const props = defineProps({
   datasets: { type: Array, default: () => [] },
   upstreamColumns: { type: Array, default: () => [] },
   secondUpstreamColumns: { type: Array, default: () => [] },
-  preview: { type: Object, default: null },
+  // 两个上游的显示名（含表名），关联数据靠它标清左表 / 右表
+  upstreamLabel: { type: String, default: '' },
+  secondUpstreamLabel: { type: String, default: '' },
   busy: { type: Boolean, default: false }
 })
 
@@ -26,7 +28,6 @@ const icon = computed(() => iconOf(props.node))
 const clone = value => JSON.parse(JSON.stringify(value ?? {}))
 const draft = ref(clone(props.node.config || {}))
 const nodeName = ref(props.node.name || meta.value.label)
-const databases = ref([])
 const tables = ref([])
 const targetTables = ref([])
 const localDatasets = ref([])
@@ -46,17 +47,25 @@ const targetMeta = ref(null)
 const loading = ref(false)
 const error = ref(null)
 
+/** 数据库输入取数方式：TABLE 选表 / SQL 自定义查询。旧版 SQL 输入节点恒为 SQL。 */
+const sqlMode = computed(() => props.node.type === 'SQL_INPUT' || draft.value.mode === 'SQL')
+
+function onModeChange(mode) {
+  draft.value.mode = mode
+  if (mode === 'SQL') return
+  // 从 SQL 切回选表：表字段可能是空的，按已有源连接重新拉一遍
+  if (draft.value.sourceId) loadTables()
+}
+
 watch(() => props.node, () => {
   draft.value = clone(props.node.config || {})
   nodeName.value = props.node.name || metaOf(props.node.type).label
   tableMeta.value = null
   targetMeta.value = null
-  databases.value = []
   tables.value = []
   targetTables.value = []
   if (props.node.type === 'DB_INPUT' || props.node.type === 'SQL_INPUT') {
-    if (draft.value.sourceId) loadDatabases()
-    if (draft.value.table) loadTables()
+    if (draft.value.sourceId && !sqlMode.value) loadTables()
   }
   if (props.node.type === 'DB_OUTPUT' && draft.value.targetId) loadTargetTables()
   if (props.node.type === 'OPERATOR') emit('need-upstream')
@@ -74,16 +83,10 @@ async function guard(work) {
   }
 }
 
-async function loadDatabases() {
-  if (!draft.value.sourceId) return
-  databases.value = await guard(() => api(`/sources/${draft.value.sourceId}/databases`)) || []
-}
-
 async function loadTables() {
   if (!draft.value.sourceId) return
-  const database = draft.value.database || ''
-  const query = database ? `?database=${encodeURIComponent(database)}` : ''
-  tables.value = await guard(() => api(`/sources/${draft.value.sourceId}/tables${query}`)) || []
+  // 不再传 database：表清单直接取账户上配置的那个库
+  tables.value = await guard(() => api(`/sources/${draft.value.sourceId}/tables`)) || []
   syncTableMeta()
 }
 
@@ -122,15 +125,10 @@ function syncTargetMeta() {
 async function onSourceChange(value) {
   draft.value.sourceId = value
   draft.value.table = ''
+  draft.value.columns = []
+  draft.value.targetColumns = []
   tableMeta.value = null
   tables.value = []
-  await loadDatabases()
-}
-
-async function onDatabaseChange(value) {
-  draft.value.database = value
-  draft.value.table = ''
-  tableMeta.value = null
   await loadTables()
 }
 
@@ -298,6 +296,11 @@ function removeJoinKey(index) {
   joinKeys().splice(index, 1)
 }
 
+/** 供外部（底部预览条）读取「还没点应用」的当前编辑值。 */
+function snapshot() {
+  return { config: clone(draft.value), name: nodeName.value }
+}
+
 function apply() {
   const fallback = draft.value.operator
     ? (OPERATOR_LABELS[draft.value.operator] || meta.value.label)
@@ -307,6 +310,7 @@ function apply() {
     name: nodeName.value.trim() || fallback
   })
 }
+defineExpose({ snapshot })
 </script>
 
 <template>
@@ -339,58 +343,48 @@ function apply() {
           </cdc-form-item>
         </template>
 
-        <!-- 数据库输入 -->
-        <template v-else-if="node.type === 'DB_INPUT'">
+        <!-- 数据库输入：选表 / 自定义 SQL 两种取数方式 -->
+        <template v-else-if="node.type === 'DB_INPUT' || node.type === 'SQL_INPUT'">
           <cdc-form-item label="源连接" required>
             <cdc-select :model-value="draft.sourceId" filterable placeholder="选择源连接"
                         @update:model-value="onSourceChange">
               <cdc-option v-for="item in sources" :key="item.id" :label="item.name" :value="item.id"/>
             </cdc-select>
+            <div class="form-help">数据库在数据账户上维护，表清单直接来自该账户</div>
           </cdc-form-item>
-          <cdc-form-item label="数据库">
-            <cdc-select :model-value="draft.database" filterable clearable placeholder="默认库"
-                        @update:model-value="onDatabaseChange">
-              <cdc-option v-for="name in databases" :key="name" :label="name" :value="name"/>
-            </cdc-select>
+          <cdc-form-item v-if="node.type === 'DB_INPUT'" label="取数方式">
+            <cdc-radio-group :model-value="draft.mode || 'TABLE'" @update:model-value="onModeChange">
+              <cdc-radio-button value="TABLE">选择表</cdc-radio-button>
+              <cdc-radio-button value="SQL">自定义 SQL</cdc-radio-button>
+            </cdc-radio-group>
           </cdc-form-item>
-          <cdc-form-item label="表" required>
-            <cdc-select :model-value="draft.table" filterable placeholder="选择表"
-                        @update:model-value="onTableChange">
-              <cdc-option v-for="item in tables" :key="item.table" :label="`${item.schema || ''}${item.schema ? '.' : ''}${item.table}`" :value="item.table"/>
-            </cdc-select>
-          </cdc-form-item>
-          <cdc-form-item v-if="tableMeta" label="读取字段">
-            <cdc-select :model-value="draft.columns" multiple filterable placeholder="全部字段"
-                        @update:model-value="value => (draft.columns = value)">
-              <cdc-option v-for="column in tableMeta.columns" :key="column" :label="column" :value="column"/>
-            </cdc-select>
-            <div class="form-help">留空表示读取全部字段</div>
-          </cdc-form-item>
-          <cdc-form-item label="过滤条件">
-            <cdc-input v-model="draft.where" placeholder="例如 amount > 100"/>
-            <div class="form-help">直接拼进 WHERE，不要写 WHERE 关键字</div>
-          </cdc-form-item>
-        </template>
 
-        <!-- SQL 输入 -->
-        <template v-else-if="node.type === 'SQL_INPUT'">
-          <cdc-form-item label="源连接" required>
-            <cdc-select :model-value="draft.sourceId" filterable placeholder="选择源连接"
-                        @update:model-value="onSourceChange">
-              <cdc-option v-for="item in sources" :key="item.id" :label="item.name" :value="item.id"/>
-            </cdc-select>
-          </cdc-form-item>
-          <cdc-form-item label="数据库">
-            <cdc-select :model-value="draft.database" filterable clearable placeholder="默认库"
-                        @update:model-value="onDatabaseChange">
-              <cdc-option v-for="name in databases" :key="name" :label="name" :value="name"/>
-            </cdc-select>
-          </cdc-form-item>
-          <cdc-form-item label="查询 SQL" required>
-            <textarea v-model="draft.sql" class="nd-sql" rows="10"
-                      placeholder="SELECT id, amount FROM orders WHERE amount > 100"/>
-            <div class="form-help">只支持单条 SELECT / WITH 查询</div>
-          </cdc-form-item>
+          <template v-if="sqlMode">
+            <cdc-form-item label="查询 SQL" required>
+              <textarea v-model="draft.sql" class="nd-sql" rows="10"
+                        placeholder="SELECT id, amount FROM orders WHERE amount > 100"/>
+              <div class="form-help">仅支持单条 SELECT / WITH 查询</div>
+            </cdc-form-item>
+          </template>
+          <template v-else>
+            <cdc-form-item label="表" required>
+              <cdc-select :model-value="draft.table" filterable placeholder="选择表"
+                          @update:model-value="onTableChange">
+                <cdc-option v-for="item in tables" :key="item.table" :label="`${item.schema || ''}${item.schema ? '.' : ''}${item.table}`" :value="item.table"/>
+              </cdc-select>
+            </cdc-form-item>
+            <cdc-form-item v-if="tableMeta" label="读取字段">
+              <cdc-select :model-value="draft.columns" multiple filterable placeholder="全部字段"
+                          @update:model-value="value => (draft.columns = value)">
+                <cdc-option v-for="column in tableMeta.columns" :key="column" :label="column" :value="column"/>
+              </cdc-select>
+              <div class="form-help">留空表示读取全部字段</div>
+            </cdc-form-item>
+            <cdc-form-item label="过滤条件">
+              <cdc-input v-model="draft.where" placeholder="amount > 100"/>
+              <div class="form-help">直接拼进 WHERE，不要写 WHERE 关键字</div>
+            </cdc-form-item>
+          </template>
         </template>
 
         <!-- 基础算子 -->
@@ -492,10 +486,10 @@ function apply() {
             <!-- 添加计算列 -->
             <div v-else-if="draft.operator === 'CALCULATE'" class="nd-list">
               <cdc-form-item label="新列名" required>
-                <cdc-input v-model="draft.alias" placeholder="例如 含税金额"/>
+                <cdc-input v-model="draft.alias" placeholder="含税金额"/>
               </cdc-form-item>
               <cdc-form-item label="表达式" required>
-                <cdc-input v-model="draft.expression" placeholder="例如 amount * 1.13"/>
+                <cdc-input v-model="draft.expression" placeholder="amount * 1.13"/>
                 <div class="form-help">
                   可用列：<span class="mono">{{ upstreamColumns.map(item => item.label).join('、') }}</span>
                 </div>
@@ -546,10 +540,10 @@ function apply() {
                 </cdc-select>
               </cdc-form-item>
               <cdc-form-item label="分隔符">
-                <cdc-input v-model="draft.separator" placeholder="例如 -"/>
+                <cdc-input v-model="draft.separator" placeholder="-"/>
               </cdc-form-item>
               <cdc-form-item label="新列名" required>
-                <cdc-input v-model="draft.alias" placeholder="例如 省市"/>
+                <cdc-input v-model="draft.alias" placeholder="省市"/>
               </cdc-form-item>
               <cdc-checkbox :model-value="!!draft.dropSources"
                             @update:model-value="value => (draft.dropSources = value)">
@@ -586,21 +580,35 @@ function apply() {
                   <cdc-option label="右连接（保留右表全部）" value="RIGHT"/>
                 </cdc-select>
               </cdc-form-item>
-              <div v-for="(key, index) in joinKeys()" :key="index" class="nd-join-key">
-                <cdc-select v-model="key.left" filterable placeholder="左表字段">
-                  <cdc-option v-for="column in upstreamColumns" :key="column.label"
-                              :label="column.label" :value="column.label"/>
-                </cdc-select>
-                <cdc-select v-model="key.right" filterable placeholder="右表字段">
-                  <cdc-option v-for="column in secondUpstreamColumns" :key="column.label"
-                              :label="column.label" :value="column.label"/>
-                </cdc-select>
-                <button class="icon-btn" aria-label="删除关联键" @click="removeJoinKey(index)">✕</button>
-              </div>
-              <button class="btn btn-ghost btn-sm" @click="addJoinKey">+ 添加关联键</button>
-              <div class="form-help">
-                按连线顺序：先连的是左表，后连的是右表；右表的关联键不会重复输出。
-              </div>
+              <cdc-form-item label="关联键">
+                <!-- 左右表名字对齐到下面的两个下拉框，避免「哪个是左表」靠猜 -->
+                <div class="nd-join-head">
+                  <div class="nd-join-side">
+                    <span class="nd-join-tag">左表</span>
+                    <span class="nd-join-name" :title="upstreamLabel">{{ upstreamLabel || '未连接' }}</span>
+                  </div>
+                  <div/>
+                  <div class="nd-join-side">
+                    <span class="nd-join-tag">右表</span>
+                    <span class="nd-join-name" :title="secondUpstreamLabel">{{ secondUpstreamLabel || '未连接' }}</span>
+                  </div>
+                  <div/>
+                </div>
+                <div v-for="(key, index) in joinKeys()" :key="index" class="nd-join-key">
+                  <cdc-select v-model="key.left" filterable placeholder="左表字段">
+                    <cdc-option v-for="column in upstreamColumns" :key="column.label"
+                                :label="column.label" :value="column.label"/>
+                  </cdc-select>
+                  <span class="nd-join-eq">=</span>
+                  <cdc-select v-model="key.right" filterable placeholder="右表字段">
+                    <cdc-option v-for="column in secondUpstreamColumns" :key="column.label"
+                                :label="column.label" :value="column.label"/>
+                  </cdc-select>
+                  <button class="icon-btn" aria-label="删除关联键" @click="removeJoinKey(index)">✕</button>
+                </div>
+                <button class="btn btn-ghost btn-sm" @click="addJoinKey">+ 添加关联键</button>
+                <div class="form-help">左表取第一条入边，右表取第二条；右表的关联键不重复输出</div>
+              </cdc-form-item>
             </div>
 
             <!-- 行转列 -->
@@ -634,7 +642,7 @@ function apply() {
               </cdc-form-item>
               <cdc-form-item label="列值" required>
                 <cdc-input :model-value="(draft.values || []).join(', ')"
-                           placeholder="例如 已支付, 未支付"
+                           placeholder="已支付, 未支付"
                            @update:model-value="value => (draft.values = value.split(',').map(item => item.trim()).filter(Boolean))"/>
                 <div class="form-help">这些值会变成输出列名，用逗号分隔</div>
               </cdc-form-item>
@@ -739,28 +747,10 @@ function apply() {
       <p v-if="error" class="nd-error">{{ error }}</p>
       <p v-if="loading" class="nd-loading">加载中…</p>
 
-      <section v-if="preview" class="nd-preview">
-        <header>
-          <strong>预览</strong>
-          <span class="dim">{{ preview.rows.length }} 行{{ preview.truncated ? `（共 ${preview.rowsRead} 行，仅显示前 100 行）` : '' }}</span>
-        </header>
-        <p v-if="preview.note" class="form-help">{{ preview.note }}</p>
-        <div class="nd-preview-table">
-          <table>
-            <thead><tr><th v-for="column in preview.columns" :key="column">{{ column }}</th></tr></thead>
-            <tbody>
-              <tr v-for="(row, index) in preview.rows" :key="index">
-                <td v-for="(cell, columnIndex) in row" :key="columnIndex" class="mono">{{ cell }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
 
     <footer class="nd-foot">
       <button class="btn btn-ghost danger-text nd-delete" :disabled="busy" @click="emit('delete')">删除节点</button>
-      <button class="btn btn-ghost" :disabled="busy" @click="emit('preview', { config: draft, name: nodeName })">预览</button>
       <button class="btn btn-primary" :disabled="busy" @click="apply">应用</button>
     </footer>
   </aside>

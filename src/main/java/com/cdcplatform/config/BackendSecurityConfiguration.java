@@ -56,7 +56,10 @@ public class BackendSecurityConfiguration {
    &&!p.matches("/api/flows/\\d+/runs")
    &&!p.matches("/api/flows/\\d+/runs/\\d+/cancel")
    &&!p.matches("/api/flows/\\d+/nodes/[^/]+/preview")
-   &&!p.matches("/api/flows/validate");
+   &&!p.matches("/api/flows/validate")
+   // 物理删除（/api/subscriptions/{id}?purge=true、/api/capture-groups/{id}、
+   // /api/tasks/{id}/subscriptions/{sid}）不在放行名单里，因此仍然只给 ADMIN。
+   ;
  }
  private static void error(HttpServletResponse r,int status,String text)throws IOException{r.setStatus(status);r.setContentType("application/json;charset=UTF-8");r.getWriter().write("{\"error\":\""+text+"\"}");}
 }

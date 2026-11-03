@@ -28,15 +28,20 @@ public class DatasetRepository {
             sql.append(" AND LOWER(name) LIKE :like");
         }
         if (type != null && !type.isBlank()) {
-            sql.append(" AND dataset_type = :type");
+            // 「数据库」这一栏包含选表和自定义 SQL 两种，前端传的是 DB
+            if ("DB".equalsIgnoreCase(type.trim())) {
+                sql.append(" AND dataset_type IN ('TABLE', 'SQL')");
+            } else {
+                sql.append(" AND dataset_type = :type");
+            }
         }
         sql.append(" ORDER BY updated_at DESC, id DESC");
         var spec = jdbc.sql(sql.toString());
         if (q != null && !q.isBlank()) {
             spec = spec.param("like", "%" + q.trim().toLowerCase() + "%");
         }
-        if (type != null && !type.isBlank()) {
-            spec = spec.param("type", type.toUpperCase());
+        if (type != null && !type.isBlank() && !"DB".equalsIgnoreCase(type.trim())) {
+            spec = spec.param("type", type.trim().toUpperCase(java.util.Locale.ROOT));
         }
         return spec.query((rs, n) -> read(rs)).list();
     }

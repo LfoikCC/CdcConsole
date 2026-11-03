@@ -40,7 +40,7 @@ public class DevFlowController {
         this.validator = validator;
     }
 
-    public record FlowInput(String name, String description, DevGraph graph) {
+    public record FlowInput(String name, String description, DevGraph graph, Long folderId) {
     }
 
     public record MetadataInput(String name, String description) {
@@ -49,13 +49,21 @@ public class DevFlowController {
     public record PreviewInput(Integer limit) {
     }
 
+    public record FolderInput(String name, Long parentId) {
+    }
+
+    public record MoveInput(Long folderId) {
+    }
+
     @GetMapping("/flows")
     Object flows(@RequestParam(defaultValue = "") String q,
                  @RequestParam(required = false) String status,
                  @RequestParam(defaultValue = "all") String view,
+                 @RequestParam(required = false) String folder,
                  @RequestParam(defaultValue = "0") int page,
                  @RequestParam(defaultValue = "20") int size) {
-        List<DevFlow> all = flows.flows(q, status, view);
+        FolderScope scope = folderScope(folder);
+        List<DevFlow> all = flows.flows(q, status, view, scope.ids(), scope.rootOnly());
         int safePage = Math.max(0, page), safeSize = Math.max(1, Math.min(size, 100));
         int from = (int) Math.min((long) safePage * safeSize, all.size());
         int to = Math.min(from + safeSize, all.size());
@@ -67,9 +75,80 @@ public class DevFlowController {
                 "totalPages", all.isEmpty() ? 0 : (int) Math.ceil((double) all.size() / safeSize));
     }
 
+    // ------------------------------------------------------------- folders
+
+    @GetMapping("/flow-folders")
+    Object folders() {
+        return flows.folders();
+    }
+
+    @PostMapping("/flow-folders")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object createFolder(@RequestBody FolderInput input) {
+        return Map.of("id", flows.createFolder(requireName(input.name()), input.parentId()));
+    }
+
+    @PutMapping("/flow-folders/{id}")
+    void renameFolder(@PathVariable long id, @RequestBody FolderInput input) {
+        flows.renameFolder(id, requireName(input.name()));
+    }
+
+    /** 删除文件夹不会删数据流：子文件夹与其中的数据流会上移到父级。 */
+    @DeleteMapping("/flow-folders/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deleteFolder(@PathVariable long id) {
+        flows.deleteFolder(id);
+    }
+
+    /** 把数据流移动到指定文件夹；folderId 传 null 表示移回根目录。 */
+    @PatchMapping("/flows/{id}/folder")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void moveFlow(@PathVariable long id, @RequestBody MoveInput input) {
+        flows.moveFlow(id, input.folderId());
+    }
+
+    private record FolderScope(List<Long> ids, boolean rootOnly) {
+    }
+
+    /**
+     * 解析 folder 参数。
+     *
+     * <p>不传 / 传 root 都表示根目录（「数据流」入口就是根目录）；传数字表示该文件夹及其子孙。
+     */
+    private FolderScope folderScope(String folder) {
+        if (folder == null || folder.isBlank() || "root".equalsIgnoreCase(folder)) {
+            return new FolderScope(null, true);
+        }
+        try {
+            return new FolderScope(subtreeIds(Long.parseLong(folder.trim())), false);
+        } catch (NumberFormatException e) {
+            // 非法参数按「不过滤」处理，避免整页报错
+            return new FolderScope(null, false);
+        }
+    }
+
+    /** 选中某个文件夹时连同它的子孙一起显示——否则用户建了子目录却看不到里面的数据流。 */
+    private List<Long> subtreeIds(long rootId) {
+        List<com.cdcplatform.model.dev.DevFlowFolder> all = flows.folders();
+        List<Long> ids = new ArrayList<>();
+        ids.add(rootId);
+        boolean grown = true;
+        while (grown) {
+            grown = false;
+            for (var folder : all) {
+                if (folder.parentId() != null && ids.contains(folder.parentId()) && !ids.contains(folder.id())) {
+                    ids.add(folder.id());
+                    grown = true;
+                }
+            }
+        }
+        return ids;
+    }
+
     @GetMapping("/flows/summary")
-    Object summary() {
-        var summary = flows.summary();
+    Object summary(@RequestParam(required = false) String folder) {
+        FolderScope scope = folderScope(folder);
+        var summary = flows.summary(scope.ids(), scope.rootOnly());
         return Map.of("total", summary.total(), "running", summary.running(),
                 "failed", summary.failed(), "succeeded", summary.succeeded());
     }
@@ -92,6 +171,7 @@ public class DevFlowController {
         body.put("createdBy", flow.createdBy());
         body.put("createdAt", flow.createdAt());
         body.put("updatedAt", flow.updatedAt());
+        body.put("folderId", flow.folderId());
         return body;
     }
 
@@ -99,7 +179,7 @@ public class DevFlowController {
     @ResponseStatus(HttpStatus.CREATED)
     Object create(@RequestBody FlowInput input) {
         String name = requireName(input.name());
-        long id = flows.create(name, input.description(), input.graph(), actor());
+        long id = flows.create(name, input.description(), input.graph(), actor(), input.folderId());
         return Map.of("id", id);
     }
 
@@ -171,6 +251,7 @@ public class DevFlowController {
         item.put("lastRunRows", flow.lastRunRows());
         item.put("updatedAt", flow.updatedAt());
         item.put("nodeCount", flows.parseGraph(flow.graphJson()).nodes().size());
+        item.put("folderId", flow.folderId());
         return item;
     }
 

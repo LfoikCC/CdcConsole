@@ -35,8 +35,8 @@ const router = createRouter({
     // 数据开发：`new` 必须排在 `:id` 之前，否则会被当成 id 解析
     { path: '/dev', redirect: '/dev/flows' },
     { path: '/dev/flows', component: () => import('./views/dev/FlowsView.vue'), meta: { title: '数据流' } },
-    { path: '/dev/flows/new', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '新建数据流', requiresAdmin: true } },
-    { path: '/dev/flows/:id/edit', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '编辑数据流', requiresAdmin: true } },
+    { path: '/dev/flows/new', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '新建数据流', requiresAdmin: true, immersive: true } },
+    { path: '/dev/flows/:id/edit', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '编辑数据流', requiresAdmin: true, immersive: true } },
     { path: '/dev/flows/:id', component: () => import('./views/dev/FlowDetailView.vue'), meta: { title: '数据流详情' } },
     { path: '/dev/flows/:id/runs/:runId', component: () => import('./views/dev/FlowRunView.vue'), meta: { title: '运行详情' } }
   ]

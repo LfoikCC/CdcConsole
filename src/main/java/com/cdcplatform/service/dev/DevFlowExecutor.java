@@ -253,6 +253,12 @@ public class DevFlowExecutor {
         return switch (String.valueOf(node.type())) {
             case DevGraphValidator.TYPE_DB_INPUT -> {
                 SourceConfig source = source(requiredId(config, "sourceId", node));
+                // 同一个节点支持两种取数方式：选表 / 自定义 SQL
+                if (DevGraphValidator.usesSql(config)) {
+                    ReadResult result = reader.readSql(source, text(config.get("database")),
+                            text(config.get("sql")), scope, node.id(), props.getMaxRowsPerNode());
+                    yield new NodeResult(result, 0, null);
+                }
                 String database = text(config.get("database"));
                 String table = text(config.get("table"));
                 List<String> columns = stringList(config.get("columns"));
@@ -378,6 +384,10 @@ public class DevFlowExecutor {
         return switch (String.valueOf(node.type())) {
             case DevGraphValidator.TYPE_DB_INPUT -> {
                 SourceConfig source = source(requiredId(config, "sourceId", node));
+                if (DevGraphValidator.usesSql(config)) {
+                    yield new NodeResult(reader.readSql(source, text(config.get("database")),
+                            text(config.get("sql")), scope, node.id(), scan), 0, null);
+                }
                 yield new NodeResult(reader.readTable(source, text(config.get("database")),
                         text(config.get("table")), stringList(config.get("columns")),
                         text(config.get("where")), scope, node.id(), scan), 0, null);

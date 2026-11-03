@@ -59,8 +59,13 @@
 
 /* ------------------------------------------------------------- 编辑器骨架 */
 
-.flow-editor { display: flex; flex-direction: column; height: calc(100dvh - 52px - 64px); min-height: 420px; }
-.flow-editor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+/* 编辑器铺满内容区：页面外圈那 18/20/32px 的内边距纯属浪费画布面积，整体取消 */
+.content:has(.flow-editor) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.flow-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.flow-editor-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
 .fe-name {
   flex: 0 1 320px; min-width: 120px; font-size: 16px; font-weight: 600;
   color: var(--foreground); background: transparent;
@@ -74,15 +79,17 @@
 }
 .fe-actions { margin-left: auto; display: flex; gap: 8px; }
 
+.flow-editor {
+  --flow-side-width: 280px;
+}
 .flow-editor-body {
   flex: 1; min-height: 0; display: flex;
-  border: 1px solid var(--border); border-radius: var(--radius-card);
   overflow: hidden; background: var(--card);
 }
 
 /* ---------------------------------------------------------------- 节点面板 */
 
-.flow-palette { width: 200px; flex-shrink: 0; padding: 0 8px 12px; border-right: 1px solid var(--border); overflow-y: auto; }
+.flow-palette { width: var(--flow-side-width); flex-shrink: 0; padding: 0 8px 12px; border-right: 1px solid var(--border); overflow-y: auto; }
 .palette-search { position: sticky; top: 0; z-index: 1; padding: 10px 2px 8px; background: var(--card); }
 .palette-search svg { position: absolute; left: 10px; top: 19px; color: var(--muted-fg); pointer-events: none; }
 .palette-search input {
@@ -115,9 +122,10 @@
 
 /* ------------------------------------------------------------------ 画布 */
 
-.flow-stage { position: relative; flex: 1; min-width: 0; }
+/* 纵向布局：画布在上，预览条在下，预览只占右侧这一栏 */
+.flow-stage { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .flow-canvas {
-  position: absolute; inset: 0; overflow: hidden; outline: none;
+  position: relative; flex: 1; min-height: 0; overflow: hidden; outline: none;
   background-color: var(--background);
   background-image: radial-gradient(var(--border) 1px, transparent 1px);
   background-size: 16px 16px;
@@ -126,7 +134,21 @@
 .flow-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .flow-edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 .flow-edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+.flow-edge.is-selected { stroke: var(--primary); stroke-width: 2; }
 .flow-edge.is-draft { stroke: var(--primary); stroke-dasharray: 5 4; }
+/* 已经吸附到目标算子：虚线落进它的入端口，说明松手就连这里 */
+.flow-edge.is-draft.is-snap { stroke-width: 2; stroke-dasharray: 6 4; }
+
+/* 1.5px 的连线按像素点很难命中，用一条透明粗线接管点击 */
+.flow-edge-hit { fill: none; stroke: transparent; stroke-width: 20; pointer-events: stroke; cursor: pointer; }
+
+.flow-edge-menu {
+  position: absolute; z-index: 3; transform: translateX(-50%);
+  padding: 6px 16px; border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--card); color: var(--foreground); font-size: 12.5px; line-height: 1;
+  white-space: nowrap; cursor: pointer; box-shadow: var(--shadow-popover);
+}
+.flow-edge-menu:hover { background: var(--brand-subtle); color: var(--primary); }
 
 .flow-hint {
   position: absolute; inset: 0; display: grid; place-items: center;
@@ -160,6 +182,13 @@
 .fnode.is-selected { background: var(--brand-subtle); box-shadow: 0 0 0 2px var(--primary); }
 .fnode.is-target { box-shadow: 0 0 0 1px var(--primary); }
 .fnode:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 从调色板拖过来的落点预览：只占位，不参与命中 */
+.fnode-ghost {
+  position: absolute; box-sizing: border-box; border-radius: 10px; pointer-events: none;
+  display: grid; place-items: center;
+  border: 1.5px dashed var(--primary); background: var(--brand-subtle);
+}
+.fnode-ghost-icon { display: grid; place-items: center; color: var(--primary); opacity: .55; }
 .fnode-icon { width: 34px; height: 34px; display: grid; place-items: center; flex-shrink: 0; }
 .fnode-title {
   max-width: 100%; font-size: 11px; font-weight: 600; line-height: 1.2;
@@ -185,10 +214,10 @@
 /* ------------------------------------------------------------------ 抽屉 */
 
 .node-drawer {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 380px; z-index: 20;
+  /* 与 .flow-palette 同宽：编辑时接管左栏，画布宽度不跳动 */
+  width: var(--flow-side-width); flex-shrink: 0; min-width: 0;
   display: flex; flex-direction: column;
-  background: var(--card); border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-popover);
+  background: var(--card); border-right: 1px solid var(--border);
 }
 .nd-head {
   display: flex; align-items: center; gap: 10px;
@@ -226,7 +255,16 @@
 /* Null 替换：字段 / 替换值 / 删除 */
 .nd-fill { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 6px; margin-bottom: 6px; }
 /* 关联键：左表字段 / 右表字段 / 删除 */
-.nd-join-key { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 6px; margin-bottom: 6px; }
+.nd-join-key { display: grid; grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.nd-join-eq { text-align: center; color: var(--muted-fg); font-size: 12px; }
+/* 左表 / 右表抬头：列宽和下面的下拉框对齐，一眼看出哪个字段属于哪张表 */
+.nd-join-head { display: grid; grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr) 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.nd-join-side { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.nd-join-tag {
+  flex-shrink: 0; padding: 1px 5px; border-radius: 4px; font-size: 10.5px; font-weight: 600;
+  background: var(--brand-subtle); color: var(--primary);
+}
+.nd-join-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-fg); font-size: 11.5px; }
 .nd-list { margin-bottom: 12px; }
 .nd-join { margin-bottom: 10px; }
 .nd-empty {
@@ -257,7 +295,78 @@
 }
 
 @media (max-width: 1000px) {
-  .flow-editor { height: calc(100dvh - 52px - 40px); }
-  .flow-palette { width: 176px; }
-  .node-drawer { width: min(380px, 86vw); }
+  .flow-palette, .node-drawer { width: 200px; }
 }
+
+
+/* ------------------------------------------------------ 侧栏里的数据流文件夹树 */
+
+.sb-folders { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px; }
+
+.sb-folder-row {
+  display: flex; align-items: center; gap: 2px; width: 100%;
+  border: 0; background: none; border-radius: 6px;
+  color: var(--muted-fg); font-size: 12px; padding: 4px 4px 4px 24px; text-align: left;
+}
+.sb-folder-row:hover { background: var(--row-hover); }
+.sb-folder-row.active { background: var(--brand-subtle); }
+.sb-folder-row.active .sb-folder-name { color: var(--primary); font-weight: 600; }
+
+.sb-folder-toggle {
+  width: 16px; height: 18px; display: grid; place-items: center; flex-shrink: 0;
+  border: 0; background: none; color: var(--muted-fg); cursor: pointer; padding: 0;
+}
+.sb-folder-pick {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  border: 0; background: none; color: inherit; font: inherit;
+  text-align: left; padding: 0; cursor: pointer;
+}
+.sb-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 行内菜单默认不显示，避免侧栏看起来太挤 */
+.sb-folder-actions { opacity: 0; flex-shrink: 0; }
+.sb-folder-row:hover .sb-folder-actions,
+.sb-folder-row.active .sb-folder-actions { opacity: 1; }
+.sb-folder-actions .menu-trigger { width: 20px; height: 20px; font-size: 12px; }
+
+.sb-folder-add {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  border: 0; background: none; border-radius: 6px;
+  color: var(--muted-fg); font-size: 12px; padding: 5px 8px 5px 24px;
+  text-align: left; cursor: pointer;
+}
+.sb-folder-add:hover { background: var(--row-hover); color: var(--foreground); }
+
+
+/* ------------------------------------------------------- 画布底部预览条 */
+
+.flow-preview {
+  flex: 0 0 auto; display: flex; flex-direction: column;
+  background: var(--card); border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+/* 展开时占固定比例，画布自己让位 */
+.flow-preview.is-open { flex: 0 0 42%; min-height: 0; }
+
+.flow-preview-bar {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 12px; border: 0; background: none; cursor: pointer;
+  color: var(--foreground); font-size: 12.5px; font-weight: 600; text-align: left;
+}
+.flow-preview-bar:hover { background: var(--row-hover); }
+.flow-preview-bar .dim { font-weight: 400; font-size: 11.5px; }
+
+.flow-preview-body { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--border-subtle); }
+.flow-preview-meta {
+  display: flex; gap: 14px; padding: 6px 12px; font-size: 11.5px;
+  color: var(--muted-fg); border-bottom: 1px solid var(--border-subtle);
+  position: sticky; left: 0;
+}
+.flow-preview-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.flow-preview-table th {
+  position: sticky; top: 0; background: var(--card); text-align: left;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-size: 11.5px; color: var(--muted-fg); white-space: nowrap;
+}
+.flow-preview-table td { padding: 5px 10px; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
+.flow-preview-empty { padding: 18px 14px; color: var(--muted-fg); font-size: 12px; }

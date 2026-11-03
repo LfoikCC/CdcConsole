@@ -167,6 +167,34 @@ public class CaptureGroupService {
         repository.updateSubscriptionStatus(id, status, null);
     }
     public TargetSubscription subscription(long id) { return repository.subscription(id); }
+
+    /** 按旧版映射 id 找对应的目标订阅；没有则返回 null。 */
+    public TargetSubscription subscriptionForMapping(long mappingId) { return repository.subscriptionForMapping(mappingId); }
+
+    /**
+     * 彻底删除一条已取消的目标订阅。
+     *
+     * <p>只允许删已取消的：还在投递的订阅应当先取消，避免删掉正在写的目标而没人察觉。
+     */
+    public void purgeSubscription(long id) {
+        TargetSubscription subscription = repository.subscription(id);
+        if (!"CANCELLED".equalsIgnoreCase(subscription.status())) {
+            throw new IllegalStateException("只有已取消的订阅才能彻底删除，请先取消订阅");
+        }
+        repository.purgeSubscription(id);
+    }
+
+    /** 彻底删除采集组：组内还有未取消的订阅时拒绝，避免连带删掉正在投递的目标。 */
+    public void purgeGroup(long id) {
+        repository.group(id);
+        for (TargetSubscription subscription : repository.subscriptions(id)) {
+            if (!"CANCELLED".equalsIgnoreCase(subscription.status())) {
+                throw new IllegalStateException("采集组里还有未取消的订阅（#" + subscription.id()
+                        + "），请先取消全部订阅再删除采集组");
+            }
+        }
+        repository.purgeGroup(id);
+    }
     public void updateSubscription(long id, Map<String, Object> body) {
         TargetSubscription current = repository.subscription(id);
         CaptureGroup group = repository.group(current.captureGroupId());

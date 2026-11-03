@@ -2,6 +2,7 @@ package com.cdcplatform.repository;
 
 import com.cdcplatform.model.PageResult;
 import com.cdcplatform.model.dev.DevFlow;
+import com.cdcplatform.model.dev.DevFlowFolder;
 import com.cdcplatform.model.dev.DevFlowRun;
 import com.cdcplatform.model.dev.DevGraph;
 import com.cdcplatform.model.dev.DevNodeRun;
@@ -37,6 +38,14 @@ public class DevFlowRepository {
      * @param view 顶部汇总卡片的筛选维度：running / failed / succeeded，其余值（含 all）不按运行状态过滤
      */
     public List<DevFlow> flows(String q, String status, String view) {
+        return flows(q, status, view, null, false);
+    }
+
+    /**
+     * @param folderIds 只看这些文件夹（调用方负责把子树 id 一并算进来）；null/空表示不按文件夹过滤
+     * @param rootOnly  只看根目录（folder_id IS NULL）
+     */
+    public List<DevFlow> flows(String q, String status, String view, List<Long> folderIds, boolean rootOnly) {
         String lastRunStatus = switch (view == null ? "" : view.trim().toLowerCase(Locale.ROOT)) {
             case "running" -> "RUNNING";
             case "failed" -> "FAILED";
@@ -53,6 +62,16 @@ public class DevFlowRepository {
         if (lastRunStatus != null) {
             sql.append(" AND last_run_status = :lastRunStatus");
         }
+        if (rootOnly) {
+            sql.append(" AND folder_id IS NULL");
+        } else if (folderIds != null && !folderIds.isEmpty()) {
+            // 手写占位符而不是传集合：JdbcClient 对集合参数的展开行为依赖版本，显式更稳
+            sql.append(" AND folder_id IN (");
+            for (int i = 0; i < folderIds.size(); i++) {
+                sql.append(i > 0 ? ", :f" : ":f").append(i);
+            }
+            sql.append(')');
+        }
         sql.append(" ORDER BY updated_at DESC, id DESC");
         var spec = jdbc.sql(sql.toString());
         if (q != null && !q.isBlank()) {
@@ -63,6 +82,11 @@ public class DevFlowRepository {
         }
         if (lastRunStatus != null) {
             spec = spec.param("lastRunStatus", lastRunStatus);
+        }
+        if (!rootOnly && folderIds != null) {
+            for (int i = 0; i < folderIds.size(); i++) {
+                spec = spec.param("f" + i, folderIds.get(i));
+            }
         }
         return spec.query((rs, row) -> readFlow(rs)).list();
     }
@@ -97,15 +121,98 @@ public class DevFlowRepository {
     }
 
     public long create(String name, String description, DevGraph graph, String actor) {
+        return create(name, description, graph, actor, null);
+    }
+
+    public long create(String name, String description, DevGraph graph, String actor, Long folderId) {
         long id = nextId();
-        jdbc.sql("""
-                        INSERT INTO dev_flow (id, name, description, status, graph_json, version, created_by)
-                        VALUES (:id, :name, :description, 'DRAFT', :graph, 1, :actor)
+        var spec = jdbc.sql("""
+                        INSERT INTO dev_flow (id, name, description, status, graph_json, version, created_by, folder_id)
+                        VALUES (:id, :name, :description, 'DRAFT', :graph, 1, :actor, :folder)
                         """)
                 .param("id", id).param("name", name).param("description", description == null ? "" : description)
-                .param("graph", writeGraph(graph)).param("actor", actor)
-                .update();
+                .param("graph", writeGraph(graph)).param("actor", actor);
+        if (folderId == null) {
+            spec.param("folder", null, java.sql.Types.BIGINT);
+        } else {
+            spec.param("folder", folderId);
+        }
+        spec.update();
         return id;
+    }
+
+    // ------------------------------------------------------------- folders
+
+    public List<DevFlowFolder> folders() {
+        return jdbc.sql("SELECT id, name, parent_id FROM dev_flow_folder ORDER BY LOWER(name)")
+                .query((rs, row) -> new DevFlowFolder(rs.getLong("id"), rs.getString("name"),
+                        rs.getObject("parent_id", Long.class)))
+                .list();
+    }
+
+    public DevFlowFolder folder(long id) {
+        return jdbc.sql("SELECT id, name, parent_id FROM dev_flow_folder WHERE id=:id").param("id", id)
+                .query((rs, row) -> new DevFlowFolder(rs.getLong("id"), rs.getString("name"),
+                        rs.getObject("parent_id", Long.class)))
+                .optional().orElseThrow(() -> notFound("folder", id));
+    }
+
+    public long createFolder(String name, Long parentId) {
+        if (parentId != null) {
+            folder(parentId);
+        }
+        long id = nextId();
+        if (parentId == null) {
+            jdbc.sql("INSERT INTO dev_flow_folder (id, name) VALUES (:id, :name)")
+                    .param("id", id).param("name", name).update();
+        } else {
+            jdbc.sql("INSERT INTO dev_flow_folder (id, name, parent_id) VALUES (:id, :name, :parent)")
+                    .param("id", id).param("name", name).param("parent", parentId).update();
+        }
+        return id;
+    }
+
+    public void renameFolder(long id, String name) {
+        int changed = jdbc.sql("UPDATE dev_flow_folder SET name=:name, updated_at=CURRENT_TIMESTAMP WHERE id=:id")
+                .param("id", id).param("name", name).update();
+        if (changed != 1) {
+            throw notFound("folder", id);
+        }
+    }
+
+    /**
+     * 删除文件夹：子文件夹与其中的数据流**上移到父级**，而不是连带删除。
+     *
+     * <p>删目录不该毁数据——用户清理结构时最不希望数据流跟着消失。
+     */
+    public void deleteFolder(long id) {
+        DevFlowFolder folder = folder(id);
+        if (folder.parentId() == null) {
+            jdbc.sql("UPDATE dev_flow_folder SET parent_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE parent_id=:id")
+                    .param("id", id).update();
+            jdbc.sql("UPDATE dev_flow SET folder_id=NULL WHERE folder_id=:id").param("id", id).update();
+        } else {
+            jdbc.sql("UPDATE dev_flow_folder SET parent_id=:parent, updated_at=CURRENT_TIMESTAMP WHERE parent_id=:id")
+                    .param("id", id).param("parent", folder.parentId()).update();
+            jdbc.sql("UPDATE dev_flow SET folder_id=:parent WHERE folder_id=:id")
+                    .param("id", id).param("parent", folder.parentId()).update();
+        }
+        jdbc.sql("DELETE FROM dev_flow_folder WHERE id=:id").param("id", id).update();
+    }
+
+    /** 把数据流移到某个文件夹；folderId 为 null 表示移回根目录。 */
+    public void moveFlow(long id, Long folderId) {
+        if (folderId != null) {
+            folder(folderId);
+        }
+        int changed = folderId == null
+                ? jdbc.sql("UPDATE dev_flow SET folder_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=:id")
+                        .param("id", id).update()
+                : jdbc.sql("UPDATE dev_flow SET folder_id=:folder, updated_at=CURRENT_TIMESTAMP WHERE id=:id")
+                        .param("id", id).param("folder", folderId).update();
+        if (changed != 1) {
+            throw notFound("flow", id);
+        }
     }
 
     public void update(long id, String name, String description, DevGraph graph) {
@@ -238,21 +345,52 @@ public class DevFlowRepository {
 
     // --------------------------------------------------------------- summary
 
+    /** 文件夹过滤片段；列表与统计共用同一套占位符命名。 */
+    private static String folderClause(List<Long> folderIds, boolean rootOnly) {
+        if (rootOnly) {
+            return " AND folder_id IS NULL";
+        }
+        if (folderIds == null || folderIds.isEmpty()) {
+            return "";
+        }
+        StringBuilder clause = new StringBuilder(" AND folder_id IN (");
+        for (int i = 0; i < folderIds.size(); i++) {
+            clause.append(i > 0 ? ", :f" : ":f").append(i);
+        }
+        return clause.append(')').toString();
+    }
+
+    private long count(String sql, List<Long> folderIds, boolean rootOnly) {
+        var spec = jdbc.sql(sql);
+        if (!rootOnly && folderIds != null) {
+            for (int i = 0; i < folderIds.size(); i++) {
+                spec = spec.param("f" + i, folderIds.get(i));
+            }
+        }
+        return spec.query(Long.class).single();
+    }
+
     public Summary summary() {
-        long total = jdbc.sql("SELECT COUNT(*) FROM dev_flow").query(Long.class).single();
+        return summary(null, false);
+    }
+
+    /** 与列表同一口径：带上文件夹过滤，避免「卡片说 5 条、列表 0 条」。 */
+    public Summary summary(List<Long> folderIds, boolean rootOnly) {
+        String filter = folderClause(folderIds, rootOnly);
+        long total = count("SELECT COUNT(*) FROM dev_flow WHERE 1=1" + filter, folderIds, rootOnly);
         // 与「运行中」卡片的筛选口径保持一致：按数据流当前状态计数，而不是按运行记录条数
-        long running = jdbc.sql("SELECT COUNT(*) FROM dev_flow WHERE last_run_status='RUNNING'")
-                .query(Long.class).single();
-        long failed = jdbc.sql("""
+        long running = count("SELECT COUNT(*) FROM dev_flow WHERE last_run_status='RUNNING'" + filter, folderIds, rootOnly);
+        String inFolder = filter.isEmpty() ? "" : " AND r.flow_id IN (SELECT id FROM dev_flow WHERE 1=1" + filter + ")";
+        long failed = count("""
                         SELECT COUNT(*) FROM dev_flow_run r
                          WHERE r.status='FAILED'
-                           AND r.id = (SELECT MAX(x.id) FROM dev_flow_run x WHERE x.flow_id = r.flow_id)
-                        """).query(Long.class).single();
-        long succeeded = jdbc.sql("""
+                           AND r.id = (SELECT MAX(x.id) FROM dev_flow_run x WHERE x.flow_id = r.flow_id)"""
+                + inFolder, folderIds, rootOnly);
+        long succeeded = count("""
                         SELECT COUNT(*) FROM dev_flow_run r
                          WHERE r.status='SUCCEEDED'
-                           AND r.id = (SELECT MAX(x.id) FROM dev_flow_run x WHERE x.flow_id = r.flow_id)
-                        """).query(Long.class).single();
+                           AND r.id = (SELECT MAX(x.id) FROM dev_flow_run x WHERE x.flow_id = r.flow_id)"""
+                + inFolder, folderIds, rootOnly);
         return new Summary(total, running, failed, succeeded);
     }
 
@@ -268,7 +406,8 @@ public class DevFlowRepository {
                     rs.getString("last_run_status"), rs.getObject("last_run_at", OffsetDateTime.class),
                     rs.getLong("last_run_rows"), rs.getString("created_by"),
                     rs.getObject("created_at", OffsetDateTime.class),
-                    rs.getObject("updated_at", OffsetDateTime.class));
+                    rs.getObject("updated_at", OffsetDateTime.class),
+                    rs.getObject("folder_id", Long.class));
         } catch (SQLException e) {
             throw new IllegalStateException("读取数据流失败", e);
         }

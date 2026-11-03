@@ -41,6 +41,21 @@ export const OPERATOR_ICONS = {
 /** 需要两个上游的算子：画布上要画第二个入端口，校验器要求恰好两条入边。 */
 export const TWO_INPUT_OPERATORS = ['UNION', 'JOIN']
 
+/** 只有出口的数据源节点：不该被连入。 */
+export const SOURCE_ONLY_TYPES = ['DB_INPUT', 'SQL_INPUT', 'DATASET_INPUT']
+/** 只有入口的落地节点：不能当作上游。 */
+export const SINK_ONLY_TYPES = ['DB_OUTPUT', 'DATASET_OUTPUT']
+
+/** 这个节点能否接收上游连线。 */
+export function acceptsInput(node) {
+  return !SOURCE_ONLY_TYPES.includes(node?.type)
+}
+
+/** 这个节点能否作为别的节点的上游。 */
+export function canBeUpstream(node) {
+  return !SINK_ONLY_TYPES.includes(node?.type)
+}
+
 export function needsTwoInputs(node) {
   return node?.type === 'OPERATOR' && TWO_INPUT_OPERATORS.includes(node.config?.operator)
 }
@@ -102,17 +117,20 @@ export const NODE_TYPES = {
     label: '数据库输入',
     icon: Database,
     tone: 'src',
-    defaults: () => ({ sourceId: null, database: '', table: '', columns: [], where: '' }),
+    // mode：TABLE 选表 / SQL 自定义查询。两种取数方式收在同一个节点里
+    defaults: () => ({ sourceId: null, mode: 'TABLE', database: '', table: '', columns: [], where: '', sql: '' }),
     // 带库名前缀：标题已经显示节点名，副标题再重复表名就没有信息量了
-    subtitle: config => (config.table
-      ? `${config.database ? config.database + '.' : ''}${config.table}`
-      : '未选择表')
+    subtitle: config => {
+      if (config.mode === 'SQL') return config.sql ? '自定义查询' : '未填写 SQL'
+      return config.table ? `${config.database ? config.database + '.' : ''}${config.table}` : '未选择表'
+    }
   },
+  /** 旧版「SQL 输入」节点：不再出现在算子面板里，只用于兼容已保存的数据流。 */
   SQL_INPUT: {
     label: 'SQL 输入',
     icon: Code2,
     tone: 'sql',
-    defaults: () => ({ sourceId: null, database: '', sql: '' }),
+    defaults: () => ({ sourceId: null, mode: 'SQL', database: '', sql: '' }),
     subtitle: config => (config.sql ? '自定义查询' : '未填写 SQL')
   },
   OPERATOR: {
@@ -162,16 +180,16 @@ const OPERATOR_GROUPS = [
 ]
 
 /**
- * 调色板：输入/输出 + 五个算子分组，共 6 组 19 项。
+ * 调色板：输入/输出 + 五个算子分组，共 6 组 18 项。
  *
  * <p>节点类型仍是 OPERATOR，算子只体现在 config.operator 上——图模型与执行器都不用改。
+ * 「SQL 输入」已经并进「数据库输入」（取数方式切换），这里不再单列。
  */
 export const PALETTE_GROUPS = [
   {
     label: '输入/输出',
     items: [
       { type: 'DB_INPUT', label: NODE_TYPES.DB_INPUT.label, icon: Database, tone: 'src' },
-      { type: 'SQL_INPUT', label: NODE_TYPES.SQL_INPUT.label, icon: Code2, tone: 'sql' },
       { type: 'DATASET_INPUT', label: NODE_TYPES.DATASET_INPUT.label, icon: Layers, tone: 'src' },
       { type: 'DB_OUTPUT', label: NODE_TYPES.DB_OUTPUT.label, icon: Upload, tone: 'sink' },
       { type: 'DATASET_OUTPUT', label: NODE_TYPES.DATASET_OUTPUT.label, icon: Save, tone: 'sink' }

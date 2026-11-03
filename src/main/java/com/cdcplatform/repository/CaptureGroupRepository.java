@@ -93,6 +93,28 @@ public class CaptureGroupRepository {
         jdbc.sql("UPDATE cdc_target_subscription SET status=:status,last_error=:error,updated_at=CURRENT_TIMESTAMP WHERE id=:id")
                 .param("id", id).param("status", status).param("error", error).update();
     }
+
+    /**
+     * 物理删除一条目标订阅及其投递批次。
+     *
+     * <p>注意：{@code target_subscription_table.subscription_id} 与 {@code reconciliation_run.subscription_id}
+     * 指的是**任务级**订阅 id，和这里的 cdc_target_subscription 是两套编号，绝不能按 id 顺手删——
+     * 那会误删同号的任务订阅数据。以 mapping_id 关联的检查点/快照可能被多个订阅共用，同样不动。
+     */
+    public void purgeSubscription(long id) {
+        jdbc.sql("DELETE FROM cdc_subscription_batch WHERE subscription_id=:id").param("id", id).update();
+        jdbc.sql("DELETE FROM cdc_target_subscription WHERE id=:id").param("id", id).update();
+    }
+
+    /** 物理删除一个采集组：先清掉它的订阅，再删组（批次由外键级联，运行时表记录由外键置空）。 */
+    public void purgeGroup(long id) {
+        for (TargetSubscription subscription : subscriptions(id)) {
+            purgeSubscription(subscription.id());
+        }
+        jdbc.sql("DELETE FROM cdc_capture_batch WHERE capture_group_id=:id").param("id", id).update();
+        jdbc.sql("DELETE FROM cdc_capture_group WHERE id=:id").param("id", id).update();
+    }
+
     public void updateSubscription(long id, Map<String, Object> body) {
         if(jdbc.sql("SELECT COUNT(*) FROM recovery_job WHERE mapping_id=(SELECT mapping_id FROM cdc_target_subscription WHERE id=:id) AND status NOT IN ('SUCCEEDED','CANCELLED')").param("id",id).query(Long.class).single()>0)
             throw new IllegalStateException("该目标表有未完成恢复作业，不能修改映射");

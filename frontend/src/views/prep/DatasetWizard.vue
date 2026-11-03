@@ -1,17 +1,19 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, ArrowRight, Code2, FileSpreadsheet, Table2 } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Database, FileSpreadsheet } from 'lucide-vue-next'
 import { api, upload } from '../../api'
 import { CdcMessage } from '../../components/ui/feedback'
 import ExcelUploader from '../../components/prep/ExcelUploader.vue'
 
 const router = useRouter()
 const step = ref(1)
-const type = ref('TABLE')
+const source = ref('DB')      // DB | EXCEL
+const dbMode = ref('TABLE')   // TABLE | SQL：同一个「数据库」来源下的两种取数方式
+// type 仍要区分 TABLE/SQL 落库，但对用户来说只有一个「数据库」入口
+const type = computed(() => (source.value === 'EXCEL' ? 'EXCEL' : dbMode.value))
 const saving = ref(false)
 const accounts = ref([])
-const databases = ref([])
 const tables = ref([])
 const loadingTables = ref(false)
 
@@ -32,8 +34,7 @@ const TYPES = [
   { value: 'BOOLEAN', label: '布尔 BOOLEAN' }
 ]
 const SOURCES = [
-  { value: 'TABLE', title: '数据库表', desc: '直连已有表，字段随源表变化，预览实时读取', icon: Table2 },
-  { value: 'SQL', title: '自定义 SQL', desc: '写一条 SELECT，把查询结果当数据集', icon: Code2 },
+  { value: 'DB', title: '数据库', desc: '选一张表或写一条 SELECT，两种方式随时切换', icon: Database },
   { value: 'EXCEL', title: 'Excel 文件', desc: '上传后物化到平台，可选择 sheet、表头与字段类型', icon: FileSpreadsheet }
 ]
 
@@ -50,25 +51,19 @@ async function loadAccounts() {
 
 async function accountChanged() {
   const account = accounts.value.find(item => item.id === form.accountId)
+  // 数据库跟着账户走，这里只是把账户上的库名记下来，向导里不再单独选库
   form.databaseName = account?.databaseName || ''
   form.tableName = ''
   tables.value = []
   if (!form.accountId) return
-  try {
-    const body = await api(`/accounts/${form.accountId}/databases`)
-    databases.value = (body || []).map(item => (typeof item === 'string' ? item : item.name)).filter(Boolean)
-  } catch {
-    databases.value = []
-  }
-  if (form.databaseName) await loadTables()
+  await loadTables()
 }
 
 async function loadTables() {
   if (!form.accountId) return
   loadingTables.value = true
   try {
-    const query = form.databaseName ? `?database=${encodeURIComponent(form.databaseName)}` : ''
-    const body = await api(`/accounts/${form.accountId}/tables${query}`)
+    const body = await api(`/accounts/${form.accountId}/tables`)
     tables.value = (body || []).map(item => item.table || item.name).filter(Boolean)
   } catch (e) {
     tables.value = []
@@ -183,7 +178,7 @@ onMounted(loadAccounts)
         <h3>数据集从哪里来</h3>
         <div class="source-cards">
           <button v-for="item in SOURCES" :key="item.value" class="source-card"
-                  :class="{ active: type === item.value }" @click="type = item.value">
+                  :class="{ active: source === item.value }" @click="source = item.value">
             <component :is="item.icon" :size="22"/>
             <strong>{{ item.title }}</strong>
             <span>{{ item.desc }}</span>
@@ -193,36 +188,23 @@ onMounted(loadAccounts)
 
       <section v-else-if="step === 2" class="wizard-section">
         <h3>配置数据</h3>
-        <template v-if="type === 'TABLE'">
-          <div class="two-cols">
-            <cdc-form-item label="数据账户" required>
-              <cdc-select v-model="form.accountId" filterable placeholder="选择可查询的账户" style="width:100%" @change="accountChanged">
-                <cdc-option v-for="item in accounts" :key="item.id" :label="item.name" :value="item.id" :brand="item.accountType"/>
-              </cdc-select>
-            </cdc-form-item>
-            <cdc-form-item label="数据库">
-              <cdc-input v-model="form.databaseName" placeholder="默认使用账户里的数据库" @blur="loadTables"/>
-            </cdc-form-item>
-          </div>
-          <cdc-form-item label="数据表" required>
+        <template v-if="source === 'DB'">
+          <cdc-radio-group v-model="dbMode" style="margin-bottom:14px">
+            <cdc-radio-button value="TABLE">选择数据表</cdc-radio-button>
+            <cdc-radio-button value="SQL">自定义 SQL</cdc-radio-button>
+          </cdc-radio-group>
+          <cdc-form-item label="数据账户" required>
+            <cdc-select v-model="form.accountId" filterable placeholder="选择可查询的账户" style="width:100%" @change="accountChanged">
+              <cdc-option v-for="item in accounts" :key="item.id" :label="item.name" :value="item.id" :brand="item.accountType"><DatabaseBrand :type="item.accountType" :label="item.name"/></cdc-option>
+            </cdc-select>
+            <div class="form-help">表清单来自账户上配置的数据库</div>
+          </cdc-form-item>
+          <cdc-form-item v-if="dbMode === 'TABLE'" label="数据表" required>
             <cdc-select v-model="form.tableName" filterable placeholder="选择数据表" style="width:100%" :loading="loadingTables">
               <cdc-option v-for="name in tables" :key="name" :label="name" :value="name"/>
             </cdc-select>
           </cdc-form-item>
-        </template>
-
-        <template v-else-if="type === 'SQL'">
-          <div class="two-cols">
-            <cdc-form-item label="数据账户" required>
-              <cdc-select v-model="form.accountId" filterable placeholder="选择可查询的账户" style="width:100%" @change="accountChanged">
-                <cdc-option v-for="item in accounts" :key="item.id" :label="item.name" :value="item.id" :brand="item.accountType"/>
-              </cdc-select>
-            </cdc-form-item>
-            <cdc-form-item label="数据库">
-              <cdc-input v-model="form.databaseName" placeholder="默认使用账户里的数据库"/>
-            </cdc-form-item>
-          </div>
-          <cdc-form-item label="查询 SQL" required>
+          <cdc-form-item v-else label="查询 SQL" required>
             <textarea v-model="form.sqlText" class="dataset-sql" rows="10"
                       placeholder="SELECT id, amount, status FROM orders WHERE amount > 0"/>
           </cdc-form-item>

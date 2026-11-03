@@ -3,9 +3,21 @@
  *
  * 节点尺寸是常量而不是测量 DOM 得到的：坐标与渲染彻底解耦，fitView、单测和持久化才能用同一套数字。
  */
+import { canBeUpstream } from './nodeTypes'
+
 export const NODE_W = 80
 export const NODE_H = 64
 export const GRID = 8
+
+/**
+ * 画布缩放边界。
+ *
+ * 「适应」最多只放大到 100%：100% 就是节点在菜单里的原始尺寸，再放大只是浪费可视面积。
+ * 节点多时按需继续缩小，但保留一个下限，避免缩到看不清、点不中。
+ */
+export const MIN_ZOOM = 0.35
+export const MAX_ZOOM = 1.6
+export const FIT_MAX_ZOOM = 1
 
 export function snap(value) {
   return Math.round(value / GRID) * GRID
@@ -35,6 +47,17 @@ export function edgePath(from, to) {
 
 export function edgePathForNodes(fromNode, toNode, inPoint) {
   return edgePath(portOut(fromNode), inPoint || portIn(toNode))
+}
+
+/**
+ * 连线中点，用来挂「删除」按钮。
+ *
+ * 控制点是左右对称外扩的，代入三次贝塞尔公式 t=0.5 时正好化简成两端点的中点：
+ * (P0 + 3C1 + 3C2 + P3) / 8 = (P0 + P3) / 2。所以不需要解曲线方程，
+ * 也不会因为两个节点贴得很近而让按钮漂到线外。
+ */
+export function edgeMidpoint(start, end) {
+  return { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
 }
 
 export function nodeById(graph, id) {
@@ -73,6 +96,32 @@ export function wouldCycle(graph, from, to) {
 
 export function hasEdge(graph, from, to) {
   return (graph?.edges || []).some(edge => edge.from === from && edge.to === to)
+}
+
+/**
+ * 新节点落在某个位置时，会自动连上的上游节点。
+ *
+ * <p>只挑能当上游的（输出类不行），按中心点距离取最近的一个，超出半径就不连——
+ * 落点离谁都远的时候乱连比不连更烦人。
+ * 已经有连线、或者会成环的组合直接跳过，和手工拖线的规则保持一致。
+ */
+export function autoUpstream(graph, node, radius = 260) {
+  const cx = node.x + NODE_W / 2
+  const cy = node.y + NODE_H / 2
+  let best = null
+  let bestDistance = Infinity
+  for (const other of graph?.nodes || []) {
+    if (other.id === node.id || !canBeUpstream(other)) continue
+    const distance = Math.hypot(other.x + NODE_W / 2 - cx, other.y + NODE_H / 2 - cy)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = other
+    }
+  }
+  if (!best || bestDistance > radius) return null
+  if (hasEdge(graph, best.id, node.id)) return null
+  if (wouldCycle(graph, best.id, node.id)) return null
+  return best
 }
 
 export function upstreamOf(graph, id) {
@@ -119,7 +168,9 @@ export function fitView(nodes, viewport, padding = 56) {
   const box = bounds(nodes)
   const vw = Math.max(1, viewport.width)
   const vh = Math.max(1, viewport.height)
-  const zoom = Math.min(1.4, Math.max(0.4, Math.min((vw - padding * 2) / box.width, (vh - padding * 2) / box.height)))
+  // 上限 1.0：节点多时按需缩小，节点少时保持与算子菜单里的卡片同尺寸，不做放大
+  const zoom = Math.min(FIT_MAX_ZOOM,
+      Math.max(MIN_ZOOM, Math.min((vw - padding * 2) / box.width, (vh - padding * 2) / box.height)))
   return {
     zoom,
     panX: (vw - box.width * zoom) / 2 - box.minX * zoom,

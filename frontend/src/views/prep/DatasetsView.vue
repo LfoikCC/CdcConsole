@@ -18,27 +18,35 @@ const edit = reactive({
 })
 const isAdmin = computed(() => can('admin'))
 
-const TYPE_LABELS = { TABLE: '库表', SQL: 'SQL', EXCEL: 'Excel', EXTRACT: '离线' }
+const TYPE_LABELS = { TABLE: '数据库', SQL: '数据库', EXCEL: 'Excel', EXTRACT: '离线' }
 const TYPE_ICONS = { TABLE: Table2, SQL: Code2, EXCEL: FileSpreadsheet, EXTRACT: Archive }
 const TYPE_TONES = { TABLE: 'running', SQL: 'warning', EXCEL: '', EXTRACT: 'running' }
 
 const filtered = computed(() => datasets.value.filter(item => {
-  const matchType = !type.value || item.datasetType === type.value
+  const matchType = !type.value
+    || (type.value === 'DB' ? ['TABLE', 'SQL'].includes(item.datasetType) : item.datasetType === type.value)
   const matchText = !q.value || item.name.toLowerCase().includes(q.value.trim().toLowerCase())
   return matchType && matchText
 }))
 const counts = computed(() => ({
   all: datasets.value.length,
+  DB: datasets.value.filter(item => ['TABLE', 'SQL'].includes(item.datasetType)).length,
   TABLE: datasets.value.filter(item => item.datasetType === 'TABLE').length,
   SQL: datasets.value.filter(item => item.datasetType === 'SQL').length,
   EXCEL: datasets.value.filter(item => item.datasetType === 'EXCEL').length,
   EXTRACT: datasets.value.filter(item => item.datasetType === 'EXTRACT').length
 }))
 
+/**
+ * 一次取全量，类型和关键字都在前端筛。
+ *
+ * <p>以前把 type 传给后端，回来的是过滤后的子集，四个页签的计数就都跟着变成子集的大小——
+ * 点「数据库」之后「全部」也显示 0，看着像数据没了。数据集数量有限（上限 500），本地筛更稳也更快。
+ */
 async function load() {
   loading.value = true
   try {
-    const body = await api(`/datasets?size=500${q.value ? '&q=' + encodeURIComponent(q.value) : ''}${type.value ? '&type=' + type.value : ''}`)
+    const body = await api('/datasets?size=500')
     datasets.value = body.items || []
   } catch (e) {
     CdcMessage.error(e.message)
@@ -49,7 +57,6 @@ async function load() {
 
 function selectType(value) {
   type.value = value
-  load()
 }
 
 function source(item) {
@@ -176,11 +183,8 @@ onMounted(load)
       <button class="summary-item task-filter" :class="{ active: !type }" :aria-pressed="!type" @click="selectType('')">
         <span>全部数据集</span><strong>{{ counts.all }}</strong>
       </button>
-      <button class="summary-item task-filter" :class="{ active: type === 'TABLE' }" :aria-pressed="type === 'TABLE'" @click="selectType('TABLE')">
-        <span>库表</span><strong>{{ counts.TABLE }}</strong>
-      </button>
-      <button class="summary-item task-filter" :class="{ active: type === 'SQL' }" :aria-pressed="type === 'SQL'" @click="selectType('SQL')">
-        <span>SQL 查询</span><strong>{{ counts.SQL }}</strong>
+      <button class="summary-item task-filter" :class="{ active: type === 'DB' }" :aria-pressed="type === 'DB'" @click="selectType('DB')">
+        <span>数据库</span><strong>{{ counts.DB }}</strong>
       </button>
       <button class="summary-item task-filter" :class="{ active: type === 'EXCEL' }" :aria-pressed="type === 'EXCEL'" @click="selectType('EXCEL')">
         <span>Excel 文件</span><strong>{{ counts.EXCEL }}</strong>
@@ -195,7 +199,7 @@ onMounted(load)
     <div class="toolbar task-filters">
       <div class="search-box">
         <Search :size="14" class="search-icon"/>
-        <input v-model="q" placeholder="搜索数据集名称" aria-label="搜索数据集名称" @keyup.enter="load"/>
+        <input v-model="q" placeholder="搜索数据集名称" aria-label="搜索数据集名称"/>
       </div>
       <span class="toolbar-spacer"/>
       <button class="console-btn" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }"/>刷新</button>
@@ -273,7 +277,7 @@ onMounted(load)
         <cdc-input v-model="edit.description" type="textarea" :rows="3" maxlength="1000"/>
       </cdc-form-item>
       <cdc-form-item v-if="edit.type === 'TABLE'" label="数据表">
-        <cdc-input v-model="edit.tableName" placeholder="例如 orders"/>
+        <cdc-input v-model="edit.tableName" placeholder="orders"/>
         <div class="form-help">改表会重新读取字段；被数据流引用时需二次确认。</div>
       </cdc-form-item>
       <cdc-form-item v-if="edit.type === 'SQL'" label="查询 SQL">

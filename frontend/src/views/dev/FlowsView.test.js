@@ -62,7 +62,7 @@ describe('FlowsView actions', () => {
     expect(wrapper.find('thead th:last-child').text()).toBe('操作')
     expect(wrapper.find('.row-actions a.btn').text()).toBe('详情')
     const buttons = await menuButtons()
-    expect(buttons.map(button => button.textContent.trim())).toEqual(['运行', '编辑', '删除'])
+    expect(buttons.map(button => button.textContent.trim())).toEqual(['运行', '移动到文件夹', '编辑', '删除'])
   })
 
   it('deletes a flow after confirmation', async () => {

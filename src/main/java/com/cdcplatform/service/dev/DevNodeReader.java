@@ -4,6 +4,7 @@ import com.cdcplatform.config.DevProperties;
 import com.cdcplatform.model.SourceConfig;
 import com.cdcplatform.model.Types.DatabaseType;
 import com.cdcplatform.service.ConnectionProbeService;
+import com.cdcplatform.service.sql.SqlIdentifiers;
 import com.cdcplatform.service.dev.DevTempTableStore.ColumnMeta;
 import org.springframework.stereotype.Service;
 
@@ -27,13 +28,7 @@ import java.util.regex.Pattern;
 @Service
 public class DevNodeReader {
 
-    /**
-     * 标识符里不允许出现的字符：引号、分号与换行。
-     *
-     * <p>不能只放行「字母数字下划线」——真实的库表名经常带连字符（`CDC-SOURCE`）或中文，
-     * 那种白名单会把正常配置挡在门外。这里改为「禁止会破坏引用语法的字符」，其余一律加引号处理。
-     */
-    private static final Pattern UNSAFE_IDENTIFIER = Pattern.compile("[`\\[\\]\"';\\r\\n]");
+    /** 只看开头是不是 SELECT / WITH；引用规则与校验都在 {@link SqlIdentifiers}。 */
     private static final Pattern LEADING_KEYWORD = Pattern.compile("(?is)^(select|with)\\b");
 
     private final ConnectionProbeService probe;
@@ -55,7 +50,7 @@ public class DevNodeReader {
 
     /** 只取字段，不读数据：数据集创建/刷新字段用。 */
     public List<ColumnMeta> describeTable(SourceConfig source, String database, String table) {
-        String sql = "SELECT * FROM " + qualified(source.dbType(), blankToNull(database), table) + " WHERE 1=0";
+        String sql = "SELECT * FROM " + qualified(source.dbType(), effectiveDatabase(source, database), table) + " WHERE 1=0";
         return describe(source, database, sql);
     }
 
@@ -67,11 +62,12 @@ public class DevNodeReader {
         if (hasMultipleStatements(cleaned)) {
             throw new IllegalArgumentException("数据集 SQL 只能包含一条查询语句");
         }
-        return describe(source, database, "SELECT * FROM (" + cleaned + ") x WHERE 1=0");
+        return describe(source, database,
+                "SELECT * FROM (" + quoteQualifiedNames(cleaned, source.dbType()) + ") x WHERE 1=0");
     }
 
     public PreviewData previewTable(SourceConfig source, String database, String table, int limit) {
-        String sql = "SELECT * FROM " + qualified(source.dbType(), blankToNull(database), table);
+        String sql = "SELECT * FROM " + qualified(source.dbType(), effectiveDatabase(source, database), table);
         return preview(source, database, sql, limit);
     }
 
@@ -80,7 +76,7 @@ public class DevNodeReader {
         if (!LEADING_KEYWORD.matcher(cleaned).find() || hasMultipleStatements(cleaned)) {
             throw new IllegalArgumentException("数据集 SQL 只支持单条 SELECT 或 WITH 查询");
         }
-        return preview(source, database, cleaned, limit);
+        return preview(source, database, quoteQualifiedNames(cleaned, source.dbType()), limit);
     }
 
     private List<ColumnMeta> describe(SourceConfig source, String database, String sql) {
@@ -127,7 +123,7 @@ public class DevNodeReader {
 
     private Connection open(SourceConfig source, String database) throws SQLException {
         Connection connection = DriverManager.getConnection(
-                withTimeouts(probe.streamingUrl(source, database), source.dbType()),
+                withTimeouts(probe.streamingUrl(source, effectiveDatabase(source, database)), source.dbType()),
                 source.username(), source.password());
         connection.setReadOnly(true);
         return connection;
@@ -136,7 +132,7 @@ public class DevNodeReader {
     /** 读取源表。{@code columns} 为空表示全列；{@code where} 可为空。 */
     public ReadResult readTable(SourceConfig source, String database, String table, List<String> columns,
                                 String where, long runId, String nodeKey, int maxRows) {
-        String schema = blankToNull(database);
+        String schema = effectiveDatabase(source, database);
         String sql = "SELECT " + selectList(columns, source.dbType()) + " FROM " + qualified(source.dbType(), schema, table);
         String filter = blankToNull(where);
         if (filter != null) {
@@ -157,7 +153,8 @@ public class DevNodeReader {
         if (hasMultipleStatements(cleaned)) {
             throw new IllegalArgumentException("SQL 节点只能包含一条查询语句");
         }
-        return run(source, blankToNull(database), cleaned, runId, nodeKey, maxRows, null);
+        return run(source, effectiveDatabase(source, database), quoteQualifiedNames(cleaned, source.dbType()),
+                runId, nodeKey, maxRows, null);
     }
 
     private ReadResult run(SourceConfig source, String database, String sql, long runId, String nodeKey,
@@ -165,7 +162,7 @@ public class DevNodeReader {
         String table = store.tableName(runId, nodeKey);
         store.drop(table);
         try (Connection connection = DriverManager.getConnection(
-                withTimeouts(probe.streamingUrl(source, database), source.dbType()),
+                withTimeouts(probe.streamingUrl(source, effectiveDatabase(source, database)), source.dbType()),
                 source.username(), source.password())) {
             connection.setReadOnly(true);
             try (var statement = connection.prepareStatement(sql)) {
@@ -214,37 +211,30 @@ public class DevNodeReader {
         return String.join(", ", quoted);
     }
 
+    /** 引用规则见 {@link SqlIdentifiers}：数据开发与数据分析必须共用同一套。 */
     static String quote(DatabaseType type, String identifier) {
-        if (identifier == null || identifier.isBlank() || identifier.length() > 128
-                || UNSAFE_IDENTIFIER.matcher(identifier).find()) {
-            throw new IllegalArgumentException("非法标识符：" + identifier);
-        }
-        return type == DatabaseType.SQLSERVER ? "[" + identifier + "]" : "`" + identifier + "`";
+        return SqlIdentifiers.quote(type, identifier);
     }
 
     static String qualified(DatabaseType type, String database, String table) {
-        String quotedTable = quote(type, table);
-        if (database == null) {
-            return quotedTable;
-        }
-        return quote(type, database) + "." + quotedTable;
+        return SqlIdentifiers.qualified(type, database, table);
+    }
+
+    static String quoteQualifiedNames(String sql, DatabaseType type) {
+        return SqlIdentifiers.quoteQualifiedNames(sql, type);
     }
 
     private static String stripComments(String sql) {
-        if (sql == null) {
-            return "";
-        }
-        String withoutBlock = sql.replaceAll("(?s)/\\*.*?\\*/", " ");
-        return withoutBlock.replaceAll("(?m)--.*$", " ").trim();
+        return SqlIdentifiers.stripComments(sql);
     }
 
-    /** 去掉末尾分号后仍含分号，说明是多条语句。 */
     private static boolean hasMultipleStatements(String sql) {
-        String trimmed = sql.trim();
-        if (trimmed.endsWith(";")) {
-            trimmed = trimmed.substring(0, trimmed.length() - 1);
-        }
-        return trimmed.contains(";");
+        return SqlIdentifiers.hasMultipleStatements(sql);
+    }
+
+    private static String effectiveDatabase(SourceConfig source, String database) {
+        String value = blankToNull(database);
+        return value != null ? value : blankToNull(source.databaseName());
     }
 
     private static String blankToNull(String value) {
@@ -258,22 +248,12 @@ public class DevNodeReader {
      * 而数据流是串行执行、并发额度有限的：一个死掉的主机就能把整个模块卡住。
      */
     static String withTimeouts(String url, DatabaseType type) {
-        if (url == null) {
-            return null;
-        }
-        if (url.startsWith("jdbc:mysql:")) {
-            return url + "&connectTimeout=10000&socketTimeout=120000";
-        }
-        if (url.startsWith("jdbc:sqlserver:")) {
-            return url + ";loginTimeout=10;socketTimeout=120000";
-        }
-        return url;
+        return SqlIdentifiers.withTimeouts(url, type);
     }
 
     /** 供测试与调试：暴露一条已清洗的 SQL 是否可执行。 */
     public static boolean isReadOnlyQuery(String sql) {
-        String cleaned = stripComments(sql);
-        return LEADING_KEYWORD.matcher(cleaned).find() && !hasMultipleStatements(cleaned);
+        return SqlIdentifiers.isReadOnlyQuery(sql);
     }
 
     /** 只用于单测：把 Statement 的读取方式统一到一处，便于替换。 */

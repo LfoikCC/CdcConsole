@@ -15,13 +15,15 @@ describe('nodeTypes', () => {
     expect(OPERATOR_LABELS.SQL).toBe('SQL 算子')
   })
 
-  it('exposes a nineteen-item palette in six functional groups', () => {
+  it('exposes an eighteen-item palette in six functional groups', () => {
     expect(PALETTE_GROUPS.map(group => group.label))
       .toEqual(['输入/输出', '列编辑', '行处理', '聚合', '多表', '高级'])
     const items = PALETTE_GROUPS.flatMap(group => group.items)
-    expect(items).toHaveLength(19)
+    expect(items).toHaveLength(18)
     expect(items.filter(item => item.type === 'OPERATOR')).toHaveLength(14)
     expect(items.filter(item => item.type === 'DATASET_INPUT' || item.type === 'DATASET_OUTPUT')).toHaveLength(2)
+    // SQL 输入已并进数据库输入，面板上不该再出现
+    expect(items.some(item => item.type === 'SQL_INPUT')).toBe(false)
     expect(items.every(item => item.icon)).toBe(true)
     const groupedOperators = PALETTE_GROUPS
       .filter(group => group.label !== '输入/输出')

@@ -200,7 +200,12 @@ public class DevGraphValidator {
         switch (String.valueOf(node.type())) {
             case TYPE_DB_INPUT -> {
                 requireNumber(config, "sourceId", node, errors, "请选择源连接");
-                requireText(config, "table", node, errors, "请选择源表");
+                // 数据库输入有两种取数方式：选表，或者写一段 SQL
+                if (usesSql(config)) {
+                    requireText(config, "sql", node, errors, "请填写 SQL");
+                } else {
+                    requireText(config, "table", node, errors, "请选择源表");
+                }
             }
             case TYPE_SQL_INPUT -> {
                 requireNumber(config, "sourceId", node, errors, "请选择源连接");
@@ -424,6 +429,22 @@ public class DevGraphValidator {
         }
         String text = String.valueOf(value).trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * 数据库输入是否走「自定义 SQL」。
+     *
+     * <p>判据放宽到「没填表但有 SQL」：老的 SQL 输入节点、以及手写 graph 里只写 sql 的配置，
+     * 都能按 SQL 处理，不用逼用户先去补一个 mode 字段。
+     */
+    public static boolean usesSql(Map<String, Object> config) {
+        if (config == null) {
+            return false;
+        }
+        if ("SQL".equalsIgnoreCase(textOf(config.get("mode")))) {
+            return true;
+        }
+        return textOf(config.get("table")) == null && textOf(config.get("sql")) != null;
     }
 
     /** 入边数量要求：输入节点 0，输出节点 1，双输入算子 2，其余 1。 */

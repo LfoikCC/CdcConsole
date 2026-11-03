@@ -126,7 +126,20 @@ public class CdcController {
     }
     @GetMapping("/subscriptions/{id}") Object subscription(@PathVariable long id) { return captureGroups.subscription(id); }
     @PutMapping("/subscriptions/{id}") void updateSubscription(@PathVariable long id, @RequestBody Map<String, Object> body) { captureGroups.updateSubscription(id, body); }
-    @DeleteMapping("/subscriptions/{id}") @ResponseStatus(HttpStatus.NO_CONTENT) void deleteSubscription(@PathVariable long id) { captureGroups.actionSubscription(id, "cancel"); }
+    /**
+     * 默认只取消（保留历史）；带 {@code purge=true} 时物理删除。
+     *
+     * <p>保留默认行为是为了兼容既有调用方——界面上「取消订阅」走的就是这个端点。
+     */
+    @DeleteMapping("/subscriptions/{id}") @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deleteSubscription(@PathVariable long id, @RequestParam(defaultValue = "false") boolean purge) {
+        if (purge) {
+            captureGroups.purgeSubscription(id);
+        } else {
+            captureGroups.actionSubscription(id, "cancel");
+        }
+    }
+    @DeleteMapping("/capture-groups/{id}") @ResponseStatus(HttpStatus.NO_CONTENT) void deleteCaptureGroup(@PathVariable long id) { captureGroups.purgeGroup(id); }
     @PostMapping("/subscriptions/{id}/actions/{action}") @ResponseStatus(HttpStatus.ACCEPTED) void subscriptionAction(@PathVariable long id, @PathVariable String action) { captureGroups.actionSubscription(id, action); }
     @PostMapping("/subscriptions/{id}/delivery-batches/{batchId}/retry") @ResponseStatus(HttpStatus.ACCEPTED) void retrySubscriptionBatch(@PathVariable long id, @PathVariable String batchId) { captureGroups.retrySubscriptionBatch(id, batchId); }
     private org.springframework.web.server.ResponseStatusException deprecatedMappingApi() {

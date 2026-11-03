@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Plus, RefreshCw, Search, Workflow } from 'lucide-vue-next'
 import { api } from '../../api'
 import { can } from '../../auth'
 import { CdcMessage, CdcMessageBox } from '../../components/ui/feedback'
 
+const route = useRoute()
 const router = useRouter()
 const flows = ref([])
 const total = ref(0)
@@ -19,6 +20,18 @@ const view = ref('all')
 const loading = ref(false)
 const error = ref(null)
 
+// 文件夹选择来自 URL（左侧导航的树负责写），这里只读
+const folderParam = computed(() => {
+  const raw = route.query.folder
+  return raw == null || raw === '' ? '' : String(raw)
+})
+
+// 移动对话框需要文件夹路径
+const folders = ref([])
+const moveDialog = ref(false)
+const moveFlowTarget = ref(null)
+const moveTargetFolder = ref(null)
+
 const isAdmin = computed(() => can('admin'))
 
 const statusOptions = [
@@ -30,6 +43,30 @@ const statusOptions = [
 const runLabels = { RUNNING: '运行中', SUCCEEDED: '成功', FAILED: '失败', CANCELED: '已取消' }
 const runClasses = { RUNNING: 'status-running', SUCCEEDED: 'status-running', FAILED: 'status-failed', CANCELED: 'status-paused' }
 
+/** 移动对话框里的选项：显示完整路径，避免不同父目录下的同名文件夹分不清。 */
+const folderOptions = computed(() => {
+  const byId = new Map(folders.value.map(f => [f.id, f]))
+  return folders.value.map(f => {
+    const parts = []
+    let cur = f
+    let guard = 0
+    while (cur && guard++ < 20) {
+      parts.unshift(cur.name)
+      cur = cur.parentId != null ? byId.get(cur.parentId) : null
+    }
+    return { id: f.id, path: parts.join(' / ') }
+  }).sort((a, b) => a.path.localeCompare(b.path, 'zh'))
+})
+
+async function loadFolders() {
+  try {
+    const body = await api('/flow-folders')
+    folders.value = Array.isArray(body) ? body : []
+  } catch {
+    folders.value = []
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
@@ -37,10 +74,12 @@ async function load() {
     const params = new URLSearchParams({ page: String(page.value - 1), size: String(pageSize), view: view.value })
     if (q.value) params.set('q', q.value)
     if (status.value) params.set('status', status.value)
+    if (folderParam.value) params.set('folder', folderParam.value)
     const body = await api(`/flows?${params}`)
     flows.value = body.items || []
     total.value = body.total || 0
-    summary.value = await api('/flows/summary')
+    // 统计与列表同口径，否则会出现「卡片 5 条、列表 0 条」
+    summary.value = await api(`/flows/summary${folderParam.value ? `?folder=${folderParam.value}` : ''}`)
   } catch (e) {
     error.value = e.message
   } finally {
@@ -49,7 +88,9 @@ async function load() {
 }
 
 function create() {
-  router.push('/dev/flows/new')
+  // 在某个文件夹里点新建，就把文件夹带过去，省得建完还要再移一次
+  const current = /^\d+$/.test(folderParam.value) ? folderParam.value : null
+  router.push(current ? `/dev/flows/new?folder=${current}` : '/dev/flows/new')
 }
 
 /** 汇总卡片是快捷筛选：选中后清掉状态下拉，避免两个维度互相打架。 */
@@ -98,14 +139,38 @@ async function remove(flow) {
   }
 }
 
+function openMove(flow) {
+  moveFlowTarget.value = flow
+  moveTargetFolder.value = flow.folderId ?? null
+  moveDialog.value = true
+}
+
+async function confirmMove() {
+  try {
+    await api(`/flows/${moveFlowTarget.value.id}/folder`, {
+      method: 'PATCH', body: JSON.stringify({ folderId: moveTargetFolder.value })
+    })
+    moveDialog.value = false
+    CdcMessage.success('已移动')
+    await load()
+  } catch (e) {
+    CdcMessage.error(e.message)
+  }
+}
+
 let timer = null
 watch(q, () => {
   clearTimeout(timer)
   timer = setTimeout(() => { page.value = 1; load() }, 250)
 })
 watch(page, load)
+// 左侧树切换文件夹只改 query，组件不会重建，必须自己监听
+watch(() => route.query.folder, () => { page.value = 1; load() })
 
-onMounted(load)
+onMounted(() => {
+  loadFolders()
+  load()
+})
 </script>
 
 <template>
@@ -181,6 +246,7 @@ onMounted(load)
                 <RouterLink class="btn btn-ghost btn-sm" :to="`/dev/flows/${flow.id}`">详情</RouterLink>
                 <cdc-menu>
                   <button @click="runFlow(flow)">运行</button>
+                  <button v-if="isAdmin" @click="openMove(flow)">移动到文件夹</button>
                   <button v-if="isAdmin" @click="router.push(`/dev/flows/${flow.id}/edit`)">编辑</button>
                   <button v-if="isAdmin" class="danger" @click="remove(flow)">删除</button>
                 </cdc-menu>
@@ -191,8 +257,9 @@ onMounted(load)
       </table>
       <div v-if="!loading && !flows.length" class="empty-state">
         <Workflow :size="34"/>
-        <p>{{ q || status || view !== 'all' ? '当前筛选下没有数据流' : '还没有数据流' }}</p>
-        <button v-if="isAdmin && !q && !status && view === 'all'" class="console-btn primary" @click="create">创建第一个数据流</button>
+        <p>{{ q || status || view !== 'all' ? '当前筛选下没有数据流'
+                : folderParam ? '该文件夹下还没有数据流' : '根目录下还没有数据流' }}</p>
+        <button v-if="isAdmin && !q && !status && view === 'all' && !folderParam" class="console-btn primary" @click="create">创建第一个数据流</button>
       </div>
     </div>
 
@@ -202,4 +269,19 @@ onMounted(load)
                       @update:current-page="value => (page = value)"/>
     </div>
   </section>
+
+  <cdc-modal v-model="moveDialog" title="移动到文件夹">
+    <cdc-form>
+      <cdc-form-item label="目标文件夹">
+        <cdc-select v-model="moveTargetFolder" filterable clearable placeholder="根目录" style="width:100%">
+          <cdc-option v-for="f in folderOptions" :key="f.id" :label="f.path" :value="f.id"/>
+        </cdc-select>
+        <div class="form-help">留空表示移到根目录</div>
+      </cdc-form-item>
+    </cdc-form>
+    <template #footer>
+      <cdc-button @click="moveDialog = false">取消</cdc-button>
+      <cdc-button type="primary" @click="confirmMove">移动</cdc-button>
+    </template>
+  </cdc-modal>
 </template>

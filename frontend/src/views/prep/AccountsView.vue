@@ -109,6 +109,7 @@ function validateConnection() {
   if (form.accountType === 'KAFKA') {
     return String(form.bootstrapServers || '').trim() ? '' : '请填写 Kafka Bootstrap Servers'
   }
+  if (!String(form.databaseName || '').trim()) return '请填写数据库名'
   if (form.accountType === 'STARROCKS') {
     if (!/^https?:\/\/.+/i.test(String(form.endpoint || '').trim())) return 'StarRocks 地址需以 http:// 或 https:// 开头'
     return Number(form.queryPort) >= 1 && Number(form.queryPort) <= 65535 ? '' : '查询端口需为 1-65535 的整数'
@@ -282,7 +283,7 @@ onMounted(load)
           <cdc-form-item label="查询端口"><cdc-input-number v-model="form.queryPort" :min="1" :max="65535" style="width:100%"/></cdc-form-item>
         </div>
         <div class="two-cols">
-          <cdc-form-item label="数据库"><cdc-input v-model="form.databaseName"/></cdc-form-item>
+          <cdc-form-item label="数据库" required><cdc-input v-model="form.databaseName" placeholder="CDC-SOURCE"/></cdc-form-item>
           <cdc-form-item label="用户名"><cdc-input v-model="form.username"/></cdc-form-item>
         </div>
         <cdc-form-item label="密码"><cdc-input v-model="form.password" type="password" show-password :placeholder="form.id ? '留空表示不修改' : ''"/></cdc-form-item>
@@ -293,7 +294,7 @@ onMounted(load)
           <cdc-form-item label="端口"><cdc-input-number v-model="form.port" :min="1" :max="65535" style="width:100%"/></cdc-form-item>
         </div>
         <div class="two-cols">
-          <cdc-form-item label="数据库"><cdc-input v-model="form.databaseName"/></cdc-form-item>
+          <cdc-form-item label="数据库" required><cdc-input v-model="form.databaseName" placeholder="CDC-SOURCE"/></cdc-form-item>
           <cdc-form-item label="用户名"><cdc-input v-model="form.username"/></cdc-form-item>
         </div>
         <cdc-form-item label="密码"><cdc-input v-model="form.password" type="password" show-password :placeholder="form.id ? '留空表示不修改' : ''"/></cdc-form-item>

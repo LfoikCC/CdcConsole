@@ -103,7 +103,9 @@ public class ConnectionProbeService {
     }
 
     public List<Map<String, Object>> tables(SourceConfig source, String database) {
-        if (database == null || database.isBlank()) throw new IllegalArgumentException("Source database is required");
+        if (database == null || database.isBlank()) {
+            throw new IllegalArgumentException("数据账户没有配置数据库，请先到数据账户里补上数据库名");
+        }
         try (var connection = DriverManager.getConnection(url(source, database), source.username(), source.password())) {
             return readTables(connection, database);
         } catch (Exception e) { throw new IllegalArgumentException("Unable to read database metadata: " + rootMessage(e), e); }

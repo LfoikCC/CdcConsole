@@ -11,7 +11,7 @@ const props = defineProps({ modelValue: Boolean, task: Object, subscription: { t
 const emit = defineEmits(['update:modelValue', 'saved'])
 const store = useAppStore()
 const step = ref(0), dirty = ref(false), loading = ref(false), validating = ref(false)
-const databases = ref([]), sourceTables = ref([]), targetTables = ref([]), targetTopics = ref([]), currentDatabase = ref('')
+const sourceTables = ref([]), targetTables = ref([]), targetTopics = ref([]), currentDatabase = ref('')
 const report = ref(null), mappingOpen = ref(false), mappingIndex = ref(-1)
 const form = reactive(blank())
 const confirmedSourceId = ref(null), confirmedTargetId = ref(null)
@@ -52,23 +52,21 @@ const mappedCount = computed(() => form.tables.filter(x => Object.keys(x.columns
 async function loadSourceMetadata(keep = false) {
   if (!form.sourceId) return
   loading.value = true
-  if (!keep) { databases.value=[]; sourceTables.value=[] }
+  if (!keep) sourceTables.value = []
   try {
-    databases.value = await api(`/sources/${form.sourceId}/databases`)
+    // 数据库统一在数据账户上配，这里直接列这个库的表，不再让人选库
+    currentDatabase.value = form.tables[0]?.sourceDatabase || source.value?.databaseName || ''
     if (!keep) form.tables = []
     if (keep && form.tables.length) {
-      for (const database of [...new Set(form.tables.map(x=>x.sourceDatabase))]) {
-        const metadata=await api(`/sources/${form.sourceId}/tables?database=${encodeURIComponent(database)}`)
-        form.tables.filter(x=>x.sourceDatabase===database).forEach(row=>{const meta=metadata.find(x=>x.table===row.sourceTable&&(x.schema||null)===(row.sourceSchema||null));row.sourceColumns=meta?.columns||[];row.sourceColumnDetails=meta?.columnDetails||[];row.reconciliation ||= disabledReconciliation();if(meta?.primaryKeys?.length && !row.keyColumns?.length)row.keyColumns=meta.primaryKeys})
-      }
+      const metadata = await api(`/sources/${form.sourceId}/tables`)
+      form.tables.forEach(row=>{const meta=metadata.find(x=>x.table===row.sourceTable&&(x.schema||null)===(row.sourceSchema||null));row.sourceColumns=meta?.columns||[];row.sourceColumnDetails=meta?.columnDetails||[];row.reconciliation ||= disabledReconciliation();if(meta?.primaryKeys?.length && !row.keyColumns?.length)row.keyColumns=meta.primaryKeys})
     }
-    currentDatabase.value = form.tables[0]?.sourceDatabase || databases.value[0] || ''
-    if (currentDatabase.value) await loadDatabase(currentDatabase.value)
+    await loadDatabase(currentDatabase.value)
   } finally { loading.value = false }
 }
 async function loadDatabase(database) {
   currentDatabase.value = database
-  sourceTables.value = await api(`/sources/${form.sourceId}/tables?database=${encodeURIComponent(database)}`)
+  sourceTables.value = await api(`/sources/${form.sourceId}/tables`)
 }
 async function loadTargetMetadata() {
   if (!form.targetId) return
@@ -87,7 +85,16 @@ function selected(meta) { return form.tables.some(x => x.sourceDatabase === curr
 function toggleTable(meta, checked) {
   const index = form.tables.findIndex(x => x.sourceDatabase === currentDatabase.value && x.sourceSchema === (meta.schema || null) && x.sourceTable === meta.table)
   if (!checked && index >= 0) form.tables.splice(index,1)
-  if (checked && index < 0) form.tables.push({ sourceDatabase:currentDatabase.value,sourceSchema:meta.schema||null,sourceTable:meta.table,targetSchema:null,targetTable:'',targetSelection:'',columns:{},keyColumns:meta.primaryKeys||[],includeOperation:false,includeCapturedAt:false,operationColumn:'_cdc_operation',capturedAtColumn:'_cdc_captured_at',capturedAtFormat:'TIMESTAMP',operationValues:{CREATE:'1',UPDATE:'2',DELETE:'3',READ:'4'},snapshotProfile:'LIGHT',incrementalProfile:'STEADY',reconciliation:disabledReconciliation(),sourceColumns:meta.columns||[],sourceColumnDetails:meta.columnDetails||[],targetColumns:isKafka.value?(meta.columns||[]):[],targetColumnDetails:isKafka.value?(meta.columnDetails||[]):[] })
+  if (checked && index < 0) {
+    if (!(meta.primaryKeys || []).length) {
+      // 同名但大小写不同的表很常见（Orders / orders），选错了只有到保存才报错，这里先提醒
+      const sibling = sourceTables.value.find(t => t !== meta && t.table.toLowerCase() === meta.table.toLowerCase()
+        && (t.primaryKeys || []).length)
+      CdcMessage.warning(`${meta.table} 未发现主键，CDC 同步需要主键`
+        + (sibling ? `；库里还有 ${sibling.table}（大小写不同）主键为 ${sibling.primaryKeys.join(', ')}` : ''))
+    }
+    form.tables.push({ sourceDatabase:currentDatabase.value,sourceSchema:meta.schema||null,sourceTable:meta.table,targetSchema:null,targetTable:'',targetSelection:'',columns:{},keyColumns:meta.primaryKeys||[],includeOperation:false,includeCapturedAt:false,operationColumn:'_cdc_operation',capturedAtColumn:'_cdc_captured_at',capturedAtFormat:'TIMESTAMP',operationValues:{CREATE:'1',UPDATE:'2',DELETE:'3',READ:'4'},snapshotProfile:'LIGHT',incrementalProfile:'STEADY',reconciliation:disabledReconciliation(),sourceColumns:meta.columns||[],sourceColumnDetails:meta.columnDetails||[],targetColumns:isKafka.value?(meta.columns||[]):[],targetColumnDetails:isKafka.value?(meta.columnDetails||[]):[] })
+  }
 }
 function selectedTargetChanged(row, value) {
   const meta = targetOptions.value.find(x => x.key === value)
@@ -218,10 +225,10 @@ function targetLabel(row){return [row.targetSchema,row.targetTable].filter(Boole
       <section v-else-if="step===1" class="wizard-section">
         <h3><Database :size="18"/>选择源表和目标对象 <small>已选择 {{form.tables.length}} 张表</small></h3>
         <div class="table-picker">
-          <aside><button v-for="db in databases" :key="db" :class="{active:db===currentDatabase}" @click="loadDatabase(db)">{{db}}</button></aside>
           <div class="source-table-list">
-              <div v-for="meta in sourceTables" :key="(meta.schema||'')+'.'+meta.table" class="source-table-row">
-              <cdc-checkbox :model-value="selected(meta)" @change="toggleTable(meta,$event)"><strong>{{meta.schema?meta.schema+'.':''}}{{meta.table}}</strong><span>{{meta.columns?.length||0}} 字段 · {{meta.primaryKeys?.length?'主键 '+meta.primaryKeys.join(', '):'未发现 PRIMARY KEY'}}</span></cdc-checkbox>
+              <div v-for="meta in sourceTables" :key="(meta.schema||'')+'.'+meta.table" class="source-table-row"
+                 :class="{ 'is-no-pk': !meta.primaryKeys?.length }">
+              <cdc-checkbox :model-value="selected(meta)" @change="toggleTable(meta,$event)"><strong>{{meta.schema?meta.schema+'.':''}}{{meta.table}}</strong><span>{{meta.columns?.length||0}} 字段 · {{meta.primaryKeys?.length?'主键 '+meta.primaryKeys.join(', '):'未发现 PRIMARY KEY'}}</span><cdc-tag v-if="!meta.primaryKeys?.length" type="warning" size="small">无主键</cdc-tag></cdc-checkbox>
             </div>
             <cdc-empty v-if="!sourceTables.length" description="该数据库没有可用表" :image-size="62"/>
           </div>

@@ -248,8 +248,30 @@ public class TaskSubscriptionService {
         }
     }
 
-    private void ensureDefaultSubscription(long taskId) {
-        if(subscriptions.hasSubscriptions(taskId)) return;
+    /**
+     * 彻底删除一条已取消的目标订阅。
+     *
+     * <p>连带清掉采集组侧同源的订阅——否则那条订阅会继续占用目标账户，用户删了任务订阅
+     * 却依然删不掉账户。只清理同样已取消的，避免误删别的任务仍在用的采集组订阅。
+     */
+    public void purge(long taskId, long subscriptionId) {
+        var subscription = get(taskId, subscriptionId);
+        if (!"CANCELLED".equalsIgnoreCase(subscription.status())) {
+            throw new IllegalStateException("只有已取消的目标订阅才能彻底删除，请先取消订阅");
+        }
+        for (var table : subscription.tables()) {
+            if (table.mappingId() <= 0) {
+                continue;
+            }
+            var groupSubscription = captureGroups.subscriptionForMapping(table.mappingId());
+            if (groupSubscription != null && "CANCELLED".equalsIgnoreCase(groupSubscription.status())) {
+                captureGroups.purgeSubscription(groupSubscription.id());
+            }
+        }
+        subscriptions.purge(subscriptionId);
+    }
+
+    private void ensureDefaultSubscription(long taskId) {        if(subscriptions.hasSubscriptions(taskId)) return;
         var task=tasks.task(taskId);
         long id=subscriptions.createSubscription(taskId,task.targetId(),"默认目标订阅","由历史单目标任务自动迁移","ACTIVE");
         for(var table:task.tables()) {

@@ -34,4 +34,20 @@ describe('FlowNodeCard compact layout', () => {
     expect(wrapper.findAll('.fnode-port.in')).toHaveLength(2)
     expect(wrapper.find('.fnode-port.out').exists()).toBe(true)
   })
+
+  it('hides the input port on nodes that cannot take upstream', () => {
+    // 输入类节点没有上游，画个入端口只会让人以为能往里连
+    const wrapper = mount(FlowNodeCard, { props: { node } })
+    expect(wrapper.find('.fnode-port.in').exists()).toBe(false)
+    expect(wrapper.find('.fnode-port.out').exists()).toBe(true)
+  })
+
+  it('keeps the input port on sink nodes', () => {
+    const wrapper = mount(FlowNodeCard, {
+      props: { node: { id: 's1', type: 'DB_OUTPUT', x: 0, y: 0, name: '入库', config: {} } }
+    })
+    expect(wrapper.find('.fnode-port.in').exists()).toBe(true)
+    // 输出节点是终点，不该再有右位点
+    expect(wrapper.find('.fnode-port.out').exists()).toBe(false)
+  })
 })

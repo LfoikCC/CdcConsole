@@ -30,7 +30,7 @@ describe('subscription lifecycle presentation',()=>{
     expect(history.attributes('open')).toBeUndefined()
     expect(history.text()).toContain('历史待处理事件（不再投递）')
     expect(history.text()).not.toContain('运行中')
-    expect(history.findAll('button').map(b=>b.text())).toEqual(['重新启用'])
+    expect(history.findAll('button').map(b=>b.text())).toEqual(['重新启用','彻底删除'])
     expect(w.findAll('th').map(h=>h.text())).toContain('投递状态')
     expect(w.findAll('th').map(h=>h.text())).toContain('初始化进度')
     history.element.open=true
@@ -39,6 +39,11 @@ describe('subscription lifecycle presentation',()=>{
     expect(api).toHaveBeenCalledWith('/tasks/7/subscriptions/2/actions/resume',{method:'POST'})
     task.status='STOPPED';window.dispatchEvent(new Event('cdc-runtime-change'));await flushPromises()
     expect(history.find('button').attributes('disabled')).toBeDefined()
+    // 彻底删除：二次确认后发 DELETE，而不是走 actions/cancel
+    CdcMessageBox.confirm.mockClear();api.mockClear()
+    await history.findAll('button')[1].trigger('click');await flushPromises()
+    expect(CdcMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining('不可恢复'),'彻底删除订阅')
+    expect(api).toHaveBeenCalledWith('/tasks/7/subscriptions/2',{method:'DELETE'})
     w.unmount()
   })
 })

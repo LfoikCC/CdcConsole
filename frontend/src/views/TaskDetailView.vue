@@ -5,7 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { CdcMessage, CdcMessageBox } from '../components/ui/feedback'
 import { createChart, chartStyle, chartAxis } from '../chartStyle'
-import { ArrowLeft, Pause, Play, RefreshCw, RotateCcw, Square, LayoutDashboard, MapPin, BarChart3, Layers, ScrollText, Package, Table2, GitBranch, Bell, ShieldCheck } from 'lucide-vue-next'
+import { ArrowLeft, Pause, Play, RefreshCw, RotateCcw, Square, LayoutDashboard, MapPin, BarChart3, Layers, ScrollText, Package, Table2, GitBranch, Bell, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { api } from '../api'
 import { useAppStore } from '../stores/app'
 import SubscriptionWizard from '../components/SubscriptionWizard.vue'
@@ -71,6 +71,16 @@ async function subscriptionAction(row,action){
     if(row.status==='CANCELLED')await CdcMessageBox.confirm('重新启用将执行目标专属全量初始化并追平增量，不影响其他目标。按主键覆盖，不清空目标表；源端已删除的历史残留行不会自动清除。','重新启用订阅',{type:'warning'})
     await api(`/tasks/${id}/subscriptions/${row.id}/actions/${action}`,{method:'POST'})
     CdcMessage.success(row.status==='CANCELLED'?'重新启用已提交，将执行全量初始化':action==='cancel'?'目标订阅已移入历史':action==='pause'?'目标订阅已暂停':action==='retry-initialization'?'已重新发起初始化':'目标订阅已恢复')
+    await load(false)
+  }catch(e){if(e!=='cancel')CdcMessage.error(e.message)}finally{subscriptionBusy.value=null}
+}
+async function purgeSubscription(row){
+  if(subscriptionBusy.value!==null)return
+  try{
+    await CdcMessageBox.confirm('彻底删除会移除该订阅的配置、投递批次与核对记录，不可恢复；采集组侧同源订阅也会一并清除，目标账户不再被它占用。','彻底删除订阅')
+    subscriptionBusy.value=row.id
+    await api(`/tasks/${id}/subscriptions/${row.id}`,{method:'DELETE'})
+    CdcMessage.success('订阅已彻底删除')
     await load(false)
   }catch(e){if(e!=='cancel')CdcMessage.error(e.message)}finally{subscriptionBusy.value=null}
 }
@@ -156,6 +166,7 @@ function tabChanged(){if(active.value==='metrics')nextTick(draw)}
             <section v-for="subscription in cancelledSubscriptions" :key="subscription.id" class="subscription-card">
               <div class="subscription-card-head"><div><strong>{{subscription.name}}</strong><p>订阅 #{{subscription.id}} · 已取消</p><p v-if="subscription.initializedAt">上次初始化完成：{{formatDateTime(subscription.initializedAt)}}（历史记录）</p></div>
                 <cdc-button size="small" type="primary" v-permit="'operate'" :loading="subscriptionBusy===subscription.id" :disabled="subscriptionBusy!==null||!['STARTING','SNAPSHOTTING','RUNNING','DEGRADED'].includes(task.status)" @click="subscriptionAction(subscription,'resume')"><Play :size="14"/>重新启用</cdc-button>
+                <cdc-button size="small" type="danger" plain v-permit="'admin'" :loading="subscriptionBusy===subscription.id" :disabled="subscriptionBusy!==null" @click="purgeSubscription(subscription)"><Trash2 :size="14"/>彻底删除</cdc-button>
               </div>
               <p v-if="!['STARTING','SNAPSHOTTING','RUNNING','DEGRADED'].includes(task.status)" class="muted">请先启动或恢复任务，再重新启用此订阅。</p>
               <dl class="subscription-meta"><div><dt>目标连接</dt><dd><DatabaseBrand :type="connectionStore.targets.find(t=>t.id===subscription.targetId)?.targetType" :label="targetName(subscription)"/></dd></div><div><dt>目标表数量</dt><dd>{{subscription.tables.length}}</dd></div><div><dt>历史待处理事件（不再投递）</dt><dd>{{subscription.pendingEvents?.toLocaleString()??'-'}}</dd></div><div><dt>历史待处理容量</dt><dd>{{subscription.pendingBytes!=null?(subscription.pendingBytes/1024/1024).toFixed(2)+' MB':'-'}}</dd></div></dl>

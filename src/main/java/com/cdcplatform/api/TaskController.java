@@ -115,6 +115,9 @@ public class TaskController {
     }
     @PostMapping("/tasks/{id}/subscriptions/{subscriptionId}/actions/{action}") @ResponseStatus(HttpStatus.ACCEPTED)
     void subscriptionAction(@PathVariable long id,@PathVariable long subscriptionId,@PathVariable String action) { targetSubscriptions.action(id,subscriptionId,action); }
+    /** 物理删除已取消的目标订阅（连同采集组侧同源订阅）。取消请走 actions/cancel。 */
+    @DeleteMapping("/tasks/{id}/subscriptions/{subscriptionId}") @ResponseStatus(HttpStatus.NO_CONTENT)
+    void purgeSubscription(@PathVariable long id,@PathVariable long subscriptionId) { targetSubscriptions.purge(id,subscriptionId); }
     @PutMapping("/tasks/{id}/subscriptions/{subscriptionId}/reconciliation") @ResponseStatus(HttpStatus.NO_CONTENT)
     void updateSubscriptionReconciliation(@PathVariable long id,@PathVariable long subscriptionId,@RequestBody Map<String,Object> body) {
         targetSubscriptions.updateReconciliation(id,subscriptionId,body);

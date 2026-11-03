@@ -171,6 +171,10 @@ public class AccountController {
         } else if (input.host() == null || input.host().isBlank()) {
             throw new IllegalArgumentException("请填写数据库地址");
         }
+        // 数据库统一在账户上定：数据流、数据集里的表都从这个库里选，不再逐个地方挑库
+        if (input.databaseName() == null || input.databaseName().isBlank()) {
+            throw new IllegalArgumentException("请填写数据库名");
+        }
         if (input.username() == null || input.username().isBlank()) {
             throw new IllegalArgumentException("请填写用户名");
         }

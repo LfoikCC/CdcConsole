@@ -132,4 +132,48 @@ describe('NodeDrawer', () => {
     expect(wrapper.text()).toContain('左表 3 列、右表 2 列')
     expect(wrapper.text()).toContain('两侧列数不一致')
   })
+
+  it('labels the left and right upstream tables in a join', () => {
+    const wrapper = mount(NodeDrawer, {
+      props: {
+        node: { id: 'n3', type: 'OPERATOR', name: '关联数据', config: { operator: 'JOIN', joinType: 'INNER', keys: [] } },
+        upstreamColumns,
+        secondUpstreamColumns,
+        upstreamLabel: '订单（CDC-SOURCE.orders）',
+        secondUpstreamLabel: '客户（CDC-SOURCE.users）',
+        busy: false
+      },
+      global: { components }
+    })
+
+    const head = wrapper.find('.nd-join-head')
+    expect(head.text()).toContain('左表')
+    expect(head.text()).toContain('订单（CDC-SOURCE.orders）')
+    expect(head.text()).toContain('右表')
+    expect(head.text()).toContain('客户（CDC-SOURCE.users）')
+  })
+
+  it('switches the database input between picking a table and writing SQL', async () => {
+    api.mockResolvedValue([])
+    const wrapper = mountDrawer({
+      id: 'i1',
+      type: 'DB_INPUT',
+      name: '数据库输入',
+      config: { sourceId: 1, mode: 'TABLE', database: 'CDC-SOURCE', table: 'orders', columns: [], where: '', sql: '' }
+    })
+
+    // 默认选表：有「表」下拉，没有 SQL 输入框
+    expect(wrapper.text()).toContain('取数方式')
+    expect(wrapper.find('textarea.nd-sql').exists()).toBe(false)
+
+    const sqlButton = wrapper.findAll('button').find(button => button.text() === '自定义 SQL')
+    await sqlButton.trigger('click')
+    expect(wrapper.find('textarea.nd-sql').exists()).toBe(true)
+
+    await wrapper.find('textarea.nd-sql').setValue('SELECT id FROM orders')
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    const config = wrapper.emitted('apply')[0][0].config
+    expect(config.mode).toBe('SQL')
+    expect(config.sql).toBe('SELECT id FROM orders')
+  })
 })

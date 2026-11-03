@@ -77,22 +77,35 @@ public class AccountRepository {
 
     public void delete(long id) {
         account(id, false);
+        // 先清废弃的表映射，再做占用检查。
+        // CaptureGroupService 启动时会为 table_mapping 里的每条映射重建采集组与订阅，
+        // 若把这一步放在检查之后，映射会在下次启动时把订阅又造出来，账户就永远删不掉。
+        jdbc.sql("DELETE FROM table_mapping WHERE source_id=:id OR target_id=:id").param("id", id).update();
         Map<String, Long> blocking = blockingUsage(id);
         if (!blocking.isEmpty()) {
             throw new IllegalStateException("数据账户仍被使用（" + describe(blocking) + "），请先解除引用");
         }
-        // table_mapping 是已废弃的表映射 API 留下的孤儿数据，随账户一起清理；checkpoint 由外键级联
-        jdbc.sql("DELETE FROM table_mapping WHERE source_id=:id OR target_id=:id").param("id", id).update();
         jdbc.sql("DELETE FROM cdc_account WHERE id=:id").param("id", id).update();
     }
 
-    /** 真正阻止删除的引用：任务、采集组、订阅。表映射属于废弃数据，直接清理。 */
+    /** 未取消的订阅才算占用；cancel 只改状态不删行，见 blockingUsage 的说明。 */
+    private static final String LIVE_SUBSCRIPTION =
+            "SELECT COUNT(*) FROM cdc_target_subscription WHERE status<>'CANCELLED'";
+    private static final String LIVE_TASK_SUBSCRIPTION =
+            "SELECT COUNT(*) FROM task_target_subscription WHERE status<>'CANCELLED'";
+
+    /**
+     * 真正阻止删除的引用：任务、采集组、订阅。表映射属于废弃数据，直接清理。
+     *
+     * <p>订阅只算「还活着」的那些：界面上删除订阅走的是 cancel，只把状态改成 CANCELLED 而不删行，
+     * 若把 CANCELLED 也算作占用，用户取消订阅之后账户就永远删不掉了。
+     */
     private Map<String, Long> blockingUsage(long id) {
         Map<String, Long> usage = new LinkedHashMap<>();
         count(usage, "同步任务", "SELECT COUNT(*) FROM sync_task WHERE source_id=:id OR target_id=:id", id);
         count(usage, "采集组", "SELECT COUNT(*) FROM cdc_capture_group WHERE source_id=:id", id);
-        count(usage, "目标订阅", "SELECT COUNT(*) FROM cdc_target_subscription WHERE target_id=:id", id);
-        count(usage, "任务目标订阅", "SELECT COUNT(*) FROM task_target_subscription WHERE target_id=:id", id);
+        count(usage, "目标订阅", LIVE_SUBSCRIPTION + " AND target_id=:id", id);
+        count(usage, "任务目标订阅", LIVE_TASK_SUBSCRIPTION + " AND target_id=:id", id);
         return usage;
     }
 
@@ -102,8 +115,8 @@ public class AccountRepository {
         count(usage, "同步任务", "SELECT COUNT(*) FROM sync_task WHERE source_id=:id OR target_id=:id", id);
         count(usage, "表映射", "SELECT COUNT(*) FROM table_mapping WHERE source_id=:id OR target_id=:id", id);
         count(usage, "采集组", "SELECT COUNT(*) FROM cdc_capture_group WHERE source_id=:id", id);
-        count(usage, "目标订阅", "SELECT COUNT(*) FROM cdc_target_subscription WHERE target_id=:id", id);
-        count(usage, "任务目标订阅", "SELECT COUNT(*) FROM task_target_subscription WHERE target_id=:id", id);
+        count(usage, "目标订阅", LIVE_SUBSCRIPTION + " AND target_id=:id", id);
+        count(usage, "任务目标订阅", LIVE_TASK_SUBSCRIPTION + " AND target_id=:id", id);
         return usage;
     }
 

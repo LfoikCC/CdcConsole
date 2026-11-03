@@ -55,6 +55,10 @@ cdc:
     preview-rows: ${CDC_DEV_PREVIEW_ROWS:200}
     max-concurrent-runs: ${CDC_DEV_MAX_CONCURRENT_RUNS:2}
     temp-schema: ${CDC_DEV_TEMP_SCHEMA:DEV_TMP}
+  bi:
+    max-rows: ${CDC_BI_MAX_ROWS:5000}
+    query-timeout-seconds: ${CDC_BI_QUERY_TIMEOUT:30}
+    max-cards-per-dashboard: ${CDC_BI_MAX_CARDS:40}
   dataset:
     directory: ${CDC_DATA_DIR:./data}/datasets
     storage-schema: ${CDC_DATASET_SCHEMA:DATASET_STORE}

@@ -116,6 +116,31 @@ class DevGraphValidatorTest {
     }
 
     @Test
+    void acceptsDatabaseInputInSqlMode() {
+        // SQL 输入并进数据库输入后：填了 SQL 就不该再要求选表
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", Map.of("sourceId", 1, "mode", "SQL",
+                                "database", "CDC-SOURCE", "sql", "SELECT id FROM orders")),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "c")));
+
+        assertThat(validator.validate(graph, true).valid()).isTrue();
+    }
+
+    @Test
+    void stillRequiresTableOrSqlForDatabaseInput() {
+        var graph = new DevGraph(
+                List.of(node("a", "DB_INPUT", Map.of("sourceId", 1, "mode", "SQL")),
+                        node("c", "DB_OUTPUT", outputConfig())),
+                List.of(new DevEdge("a", "c")));
+
+        var report = validator.validate(graph, true);
+
+        assertThat(report.valid()).isFalse();
+        assertThat(report.errors()).anyMatch(i -> "sql".equals(i.field()));
+    }
+
+    @Test
     void skipsConfigChecksWhenNotForExecution() {
         // 只存草稿时不要求填完连接和表名，否则用户没法中途保存
         var graph = new DevGraph(

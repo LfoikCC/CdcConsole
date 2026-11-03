@@ -89,6 +89,19 @@ public class TaskSubscriptionRepository {
                 .param("id", id).param("status", status).param("error", error).param("done", done).update();
     }
 
+    /**
+     * 物理删除一条任务目标订阅及其运行时配置。
+     *
+     * <p>这几张表的 subscription_id 都指向任务级订阅，按 id 清理是安全的；
+     * 采集组侧的订阅是另一套编号，由调用方单独处理。
+     */
+    public void purge(long id) {
+        jdbc.sql("DELETE FROM reconciliation_run WHERE subscription_id=:id").param("id", id).update();
+        jdbc.sql("DELETE FROM target_subscription_table WHERE subscription_id=:id").param("id", id).update();
+        jdbc.sql("DELETE FROM sync_task_table WHERE subscription_id=:id").param("id", id).update();
+        jdbc.sql("DELETE FROM task_target_subscription WHERE id=:id").param("id", id).update();
+    }
+
     public void updateRuntimeReconciliation(long runtimeTableId, ReconciliationConfig reconciliation) {
         jdbc.sql("UPDATE sync_task_table SET reconciliation_json=:reconciliation WHERE id=:id")
                 .param("id", runtimeTableId).param("reconciliation", write(reconciliation)).update();
