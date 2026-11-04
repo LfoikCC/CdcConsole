@@ -41,6 +41,10 @@ public class BiQueryService {
     public record Result(List<String> columns, List<List<Object>> rows, boolean truncated, long elapsedMs) {
     }
 
+    /** 一列的候选值：筛选的可选项、自定义排序的排序项都来自这里。 */
+    public record ValueList(List<String> values, boolean truncated) {
+    }
+
     private final BiQueryBuilder builder;
     private final DatasetRepository datasets;
     private final ConfigRepository configs;
@@ -100,6 +104,56 @@ public class BiQueryService {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("查询失败：" + e.getMessage(), e);
+        }
+    }
+
+    /** 数据集总行数。库表类数据集的元数据里没有行数，只能现算。 */
+    public long count(long datasetId) {
+        Dataset dataset = datasets.dataset(datasetId);
+        BiQueryBuilder.Source source = source(dataset);
+        var plan = builder.countRows(source);
+        try (Connection connection = open(source, dataset)) {
+            connection.setReadOnly(!source.isStorage());
+            try (PreparedStatement statement = connection.prepareStatement(plan.sql())) {
+                statement.setQueryTimeout(props.getQueryTimeoutSeconds());
+                try (ResultSet rs = statement.executeQuery()) {
+                    return rs.next() ? rs.getLong(1) : 0L;
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("统计行数失败：" + e.getMessage(), e);
+        }
+    }
+
+    /** 取某一列出现过的不重复值，最多 limit 个。 */
+    public ValueList values(long datasetId, String column, int limit) {
+        Dataset dataset = datasets.dataset(datasetId);
+        BiQueryBuilder.Source source = source(dataset);
+        var plan = builder.distinctValues(source, column, limit);
+        try (Connection connection = open(source, dataset)) {
+            connection.setReadOnly(!source.isStorage());
+            try (PreparedStatement statement = connection.prepareStatement(plan.sql())) {
+                statement.setQueryTimeout(props.getQueryTimeoutSeconds());
+                statement.setFetchSize(200);
+                statement.setMaxRows(plan.limit() + 1);
+                try (ResultSet rs = statement.executeQuery()) {
+                    List<String> values = new ArrayList<>();
+                    boolean truncated = false;
+                    while (rs.next()) {
+                        if (values.size() >= plan.limit()) {
+                            truncated = true;
+                            break;
+                        }
+                        Object raw = rs.getObject(1);
+                        if (raw != null) {
+                            values.add(String.valueOf(raw));
+                        }
+                    }
+                    return new ValueList(values, truncated);
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("读取字段取值失败：" + e.getMessage(), e);
         }
     }
 

@@ -56,7 +56,8 @@ cdc:
     max-concurrent-runs: ${CDC_DEV_MAX_CONCURRENT_RUNS:2}
     temp-schema: ${CDC_DEV_TEMP_SCHEMA:DEV_TMP}
   bi:
-    max-rows: ${CDC_BI_MAX_ROWS:5000}
+    # 单卡一次最多取多少行。前端表格已做虚拟滚动，两万行仍然流畅
+    max-rows: ${CDC_BI_MAX_ROWS:20000}
     query-timeout-seconds: ${CDC_BI_QUERY_TIMEOUT:30}
     max-cards-per-dashboard: ${CDC_BI_MAX_CARDS:40}
   dataset:

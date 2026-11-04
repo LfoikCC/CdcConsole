@@ -161,8 +161,7 @@ defineExpose({ load })
   <cdc-modal v-model="dialog" :title="form.id ? '重命名文件夹' : '新建文件夹'">
     <cdc-form>
       <cdc-form-item label="文件夹名称" required>
-        <cdc-input v-model="form.name" placeholder="文件夹名称" @keyup.enter="save"/>
-        <div class="form-help">{{ form.parentId ? '将创建在所选文件夹下' : '将创建在根目录下' }}</div>
+        <cdc-input v-model="form.name" @keyup.enter="save"/>
       </cdc-form-item>
     </cdc-form>
     <template #footer>

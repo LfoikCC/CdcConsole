@@ -135,6 +135,16 @@ public class BiDashboardService {
         return new DashboardData(System.currentTimeMillis() - started, results);
     }
 
+    /** 编辑器里显示数据集行数。 */
+    public long count(long datasetId) {
+        return queryService.count(datasetId);
+    }
+
+    /** 编辑器里选筛选值 / 排自定义顺序时，取一列的候选值。 */
+    public BiQueryService.ValueList values(long datasetId, String column, int limit) {
+        return queryService.values(datasetId, column, limit);
+    }
+
     /** 编辑器里的实时预览：配置还没落库，直接用请求体里的配置取数。 */
     public BiQueryService.Result preview(long datasetId, Map<String, Object> config) {
         return queryService.query(datasetId, CardConfig.parse(config));

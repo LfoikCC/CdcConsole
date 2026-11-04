@@ -18,7 +18,7 @@ export function resetCsrf() { csrfToken = null }
  * 放在 api() 里统一触发，比在每个调用点手写事件可靠；预览和校验虽然也是 POST，
  * 但只读不改数据，跳过。
  */
-const READ_ONLY_POST = /\/(preview|validate)$/
+const READ_ONLY_POST = /\/(preview|validate|query)$/
 let countsTimer = null
 function notifyCountsChanged(path) {
   if (READ_ONLY_POST.test(path)) return

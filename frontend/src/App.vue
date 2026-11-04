@@ -2,13 +2,15 @@
 import { computed, onMounted, onUnmounted, ref, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
-import { Activity, Bell, Database, Layers, ListChecks, ArrowRightLeft, SunMoon, Menu, RefreshCw, X, ShieldCheck, Workflow, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { Activity, Bell, Database, Layers, ListChecks, SunMoon, Menu, RefreshCw, X, ShieldCheck, Workflow, PanelLeftClose, PanelLeftOpen, LayoutDashboard } from 'lucide-vue-next'
 import AppSwitcher from './components/AppSwitcher.vue'
 import FlowFolderTree from './components/dev/FlowFolderTree.vue'
 import FeedbackHost from './components/ui/FeedbackHost.vue'
 import { CdcMessage } from './components/ui/feedback'
 import { api } from './api'
 import { identity, roleNames, logout, clearIdentity } from './auth'
+import logoLight from './assets/fluxa-logo.svg'
+import logoDark from './assets/fluxa-logo-dark.svg'
 import { toggleTheme } from './theme'
 
 const route=useRoute(),router=useRouter(),store=useAppStore(),drawer=ref(false),taskCount=ref(null)
@@ -17,10 +19,10 @@ const collapsed=ref(readCollapsed())
 function readCollapsed(){try{return localStorage.getItem('cdc.sidebar.collapsed')==='1'}catch{return false}}
 function toggleSidebar(){collapsed.value=!collapsed.value;try{localStorage.setItem('cdc.sidebar.collapsed',collapsed.value?'1':'0')}catch{}}
 const profile=ref(false),passwordDialog=ref(false),busy=ref(false),password=reactive({currentPassword:'',password:'',confirmation:''})
-const appKey=computed(()=>route.path.startsWith('/dev')?'dev':route.path.startsWith('/prep')?'prep':'sync')
+const appKey=computed(()=>route.path.startsWith('/dev')?'dev':route.path.startsWith('/prep')?'prep':route.path.startsWith('/bi')?'bi':'sync')
 // 数据流编辑器是沉浸式页面：左侧导航固定占 240px，画布本来就不够用
 const immersive=computed(()=>route.meta?.immersive===true)
-const homePath=computed(()=>appKey.value==='dev'?'/dev/flows':appKey.value==='prep'?'/prep/datasets':'/tasks')
+const homePath=computed(()=>appKey.value==='dev'?'/dev/flows':appKey.value==='prep'?'/prep/datasets':appKey.value==='bi'?'/bi/dashboards':'/tasks')
 const groups=computed(()=>appKey.value==='dev'
   ? [
       {title:'数据开发',items:[{to:'/dev/flows',label:'数据流',icon:Workflow}]}
@@ -29,11 +31,15 @@ const groups=computed(()=>appKey.value==='dev'
   ? [
       {title:'数据准备',items:[{to:'/prep/datasets',label:'数据集',icon:Layers},{to:'/prep/accounts',label:'数据账户',icon:Database,count:store.accounts.length}]}
     ]
+  : appKey.value==='bi'
+  ? [
+      {title:'数据分析',items:[{to:'/bi/dashboards',label:'数据看板',icon:LayoutDashboard}]}
+    ]
   : [
       {title:'工作区',items:[{to:'/tasks',label:'同步任务',icon:ListChecks,count:taskCount.value}]},
       {title:'监控',items:[{to:'/monitor',label:'任务监控',icon:Activity},{to:'/alerts',label:'告警中心',icon:Bell,count:store.openAlerts,danger:true},{to:'/audit',label:'审计日志',icon:ShieldCheck}]}
     ])
-const active=computed(()=>route.path.startsWith('/dev/flows')?'/dev/flows':route.path.startsWith('/tasks')?'/tasks':route.path)
+const active=computed(()=>route.path.startsWith('/dev/flows')?'/dev/flows':route.path.startsWith('/bi/dashboards')?'/bi/dashboards':route.path.startsWith('/tasks')?'/tasks':route.path)
 const title=computed(()=>route.meta.title||(route.path.endsWith('/edit')?'编辑同步任务':route.path==='/tasks/new'?'新建同步任务':groups.value.flatMap(g=>g.items).find(i=>i.to===active.value)?.label||'CDC Console'))
 watch(()=>route.fullPath,()=>{drawer.value=false;scheduleCounts()})
 /**
@@ -68,7 +74,7 @@ onUnmounted(()=>{clearTimeout(countsTimer);store.disconnectRuntime();window.remo
   <div v-else-if="identity.user" class="app">
     <button v-if="drawer&&!immersive" class="sidebar-scrim" aria-label="关闭导航" @click="drawer=false"/>
     <aside v-if="!immersive" class="sidebar" :class="{'is-open':drawer,'is-collapsed':collapsed}">
-      <div class="sb-head"><RouterLink :to="homePath" class="sb-brand"><span class="sb-logo"><ArrowRightLeft :size="14"/></span>CDC Console</RouterLink><button class="icon-btn sb-collapse desktop-only" title="隐藏菜单" aria-label="隐藏菜单" @click="toggleSidebar"><PanelLeftClose :size="15"/></button><button class="icon-btn mobile-only" aria-label="关闭导航" @click="drawer=false"><X :size="15"/></button></div>
+      <div class="sb-head"><RouterLink :to="homePath" class="sb-brand" aria-label="fluxa CDC Console"><img class="sb-logo-img" :src="logoLight" alt="fluxa"/><img class="sb-logo-img sb-logo-dark" :src="logoDark" alt=""/></RouterLink><button class="icon-btn sb-collapse desktop-only" title="隐藏菜单" aria-label="隐藏菜单" @click="toggleSidebar"><PanelLeftClose :size="15"/></button><button class="icon-btn mobile-only" aria-label="关闭导航" @click="drawer=false"><X :size="15"/></button></div>
       <nav class="sb-nav" aria-label="主导航"><div v-for="group in groups" :key="group.title"><div class="nav-group">{{group.title}}</div><RouterLink v-for="item in group.items" :key="item.to" :to="item.to" class="nav-item" :class="{active:active===item.to}"><component :is="item.icon" :size="15"/><span>{{item.label}}</span><span v-if="item.count!=null" class="nav-badge" :class="{danger:item.danger&&item.count}">{{item.count}}</span></RouterLink><FlowFolderTree v-if="group.title==='数据开发'"/></div></nav>
       <div class="sb-foot"><span class="svc" :class="{disconnected:!store.connected}"><i class="svc-dot"/>{{store.connected?'服务已连接':'服务未连接'}}</span><button class="icon-btn" title="刷新" aria-label="刷新" @click="refresh"><RefreshCw :size="13"/></button></div>
     </aside>

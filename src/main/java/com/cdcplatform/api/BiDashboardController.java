@@ -112,6 +112,26 @@ public class BiDashboardController {
         return dashboards.data(id, isAdmin(authentication));
     }
 
+    /** 数据集行数：库表数据集的元数据里没有，编辑器打开时现算一次。 */
+    @GetMapping("/datasets/{id}/stats")
+    Object stats(@PathVariable long id) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("rows", dashboards.count(id));
+        return body;
+    }
+
+    /** 筛选的候选值 / 自定义排序的候选值。GET 是为了让只读角色也能用。 */
+    @GetMapping("/datasets/{id}/values")
+    Object values(@PathVariable long id, @RequestParam String column,
+                  @RequestParam(defaultValue = "200") int limit) {
+        var result = dashboards.values(id, column, limit);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("column", column);
+        body.put("values", result.values());
+        body.put("truncated", result.truncated());
+        return body;
+    }
+
     /** 编辑器里的实时预览：卡片可能还没保存，配置直接从请求体来。 */
     @PostMapping("/query")
     Object query(@RequestBody QueryInput input) {

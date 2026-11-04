@@ -35,7 +35,7 @@ function blank() {
   return {
     id: null, name: '', accountType: 'MYSQL', host: '127.0.0.1', port: 3306,
     databaseName: '', username: 'root', password: '',
-    endpoint: 'http://127.0.0.1:18030', queryPort: 19030,
+    endpoint: 'http://127.0.0.1:8030', queryHost: '', queryPort: 9030,
     bootstrapServers: '127.0.0.1:9092', extra: {}, enabled: true
   }
 }
@@ -68,8 +68,9 @@ function openEdit(row) {
     databaseName: row.databaseName || '',
     username: row.username || 'root',
     password: '',
-    endpoint: extra.endpoint || 'http://127.0.0.1:18030',
-    queryPort: extra.queryPort || 19030,
+    endpoint: extra.endpoint || 'http://127.0.0.1:8030',
+    queryHost: extra.queryHost || '',
+    queryPort: extra.queryPort || 9030,
     bootstrapServers: extra.bootstrapServers || '127.0.0.1:9092',
     extra: { ...extra },
     enabled: row.enabled
@@ -87,7 +88,12 @@ function typeChanged() {
 
 function payload() {
   const extra = form.accountType === 'STARROCKS'
-    ? { endpoint: form.endpoint, queryPort: Number(form.queryPort) }
+    ? {
+      endpoint: String(form.endpoint || '').trim().replace(/\/$/, ''),
+      // 留空就由后端从 Stream Load 地址推导主机
+      queryHost: String(form.queryHost || '').trim() || null,
+      queryPort: Number(form.queryPort)
+    }
     : form.accountType === 'KAFKA'
       ? { bootstrapServers: form.bootstrapServers }
       // MySQL / SQL Server 的额外项（如轮询间隔）不在表单里改，原样带回去
@@ -111,7 +117,7 @@ function validateConnection() {
   }
   if (!String(form.databaseName || '').trim()) return '请填写数据库名'
   if (form.accountType === 'STARROCKS') {
-    if (!/^https?:\/\/.+/i.test(String(form.endpoint || '').trim())) return 'StarRocks 地址需以 http:// 或 https:// 开头'
+    if (!/^https?:\/\/.+/i.test(String(form.endpoint || '').trim())) return 'Stream Load 地址需以 http:// 或 https:// 开头'
     return Number(form.queryPort) >= 1 && Number(form.queryPort) <= 65535 ? '' : '查询端口需为 1-65535 的整数'
   }
   if (!String(form.host || '').trim()) return '请填写数据库地址'
@@ -279,9 +285,16 @@ onMounted(load)
       </template>
       <template v-else-if="form.accountType === 'STARROCKS'">
         <div class="two-cols">
-          <cdc-form-item label="Stream Load 地址" required><cdc-input v-model="form.endpoint" placeholder="http://127.0.0.1:18030"/></cdc-form-item>
-          <cdc-form-item label="查询端口"><cdc-input-number v-model="form.queryPort" :min="1" :max="65535" style="width:100%"/></cdc-form-item>
+          <cdc-form-item label="查询地址">
+            <cdc-input v-model="form.queryHost" placeholder="留空则与 Stream Load 同主机"/>
+          </cdc-form-item>
+          <cdc-form-item label="查询端口">
+            <cdc-input-number v-model="form.queryPort" :min="1" :max="65535" style="width:100%"/>
+          </cdc-form-item>
         </div>
+        <cdc-form-item label="Stream Load 地址" required>
+          <cdc-input v-model="form.endpoint" placeholder="http://10.2.0.84:8030"/>
+        </cdc-form-item>
         <div class="two-cols">
           <cdc-form-item label="数据库" required><cdc-input v-model="form.databaseName" placeholder="CDC-SOURCE"/></cdc-form-item>
           <cdc-form-item label="用户名"><cdc-input v-model="form.username"/></cdc-form-item>

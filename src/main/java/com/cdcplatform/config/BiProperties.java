@@ -8,8 +8,8 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "cdc.bi")
 public class BiProperties {
 
-    /** 单张卡片一次最多取多少行。 */
-    private int maxRows = 5000;
+    /** 单张卡片一次最多取多少行。表格做了虚拟滚动，两万行在浏览器里也不卡。 */
+    private int maxRows = 20000;
     /** 单条聚合查询的超时秒数：没有它，一条坏 SQL 能钉住一条源库连接几分钟。 */
     private int queryTimeoutSeconds = 30;
     /** 一个看板最多多少张卡片。 */

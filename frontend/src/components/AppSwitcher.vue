@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowRightLeft, Check, DatabaseZap, LayoutGrid, Settings, Workflow } from 'lucide-vue-next'
+import { ArrowRightLeft, ChartColumnBig, Check, DatabaseZap, LayoutGrid, Settings, Workflow } from 'lucide-vue-next'
 import { can, identity, roleNames } from '../auth'
 
 const route = useRoute()
@@ -13,6 +13,7 @@ const user = computed(() => identity.user)
 const initial = computed(() => (user.value?.name || user.value?.username || '?').trim().charAt(0).toUpperCase())
 const currentApp = computed(() => (route.path.startsWith('/dev') ? 'dev'
   : route.path.startsWith('/prep') ? 'prep'
+  : route.path.startsWith('/bi') ? 'bi'
   : route.path === '/settings' ? 'settings' : 'sync'))
 
 // 系统设置和三个工作区并列，排在最后；只有管理员可见
@@ -20,6 +21,7 @@ const apps = [
   { id: 'sync', label: '实时同步', icon: ArrowRightLeft, to: '/tasks' },
   { id: 'dev', label: '数据开发', icon: Workflow, to: '/dev/flows' },
   { id: 'prep', label: '数据准备', icon: DatabaseZap, to: '/prep/datasets' },
+  { id: 'bi', label: '数据分析', icon: ChartColumnBig, to: '/bi/dashboards' },
   { id: 'settings', label: '系统设置', icon: Settings, to: '/settings', admin: true }
 ]
 

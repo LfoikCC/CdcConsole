@@ -100,6 +100,8 @@ public class DevTargetWriter {
         try (Connection h2 = dataSource.getConnection();
              Connection out = DriverManager.getConnection(url,
                      String.valueOf(config.get("username")), String.valueOf(config.get("password")))) {
+            // 目标表只填了名字、库里还没有：按上游结构建出来再写
+            ensureTable(out, target, table, targets, sourceColumns);
             out.setAutoCommit(false);
             if (mode == WriteMode.OVERWRITE) {
                 try (Statement statement = out.createStatement()) {
@@ -143,6 +145,99 @@ public class DevTargetWriter {
             throw new IllegalStateException("写入目标表 " + table + " 失败：" + e.getMessage(), e);
         }
         return new WriteResult(written);
+    }
+
+    // ---------------------------------------------------------------- 建表
+
+    /**
+     * 表不存在就按上游列建一张。
+     *
+     * <p>先用 {@code SELECT 1 ... WHERE 1=0} 探一下：这条语句不读数据，代价极小；
+     * 失败才走建表。建表语句本身也是幂等的（MySQL / StarRocks 用 IF NOT EXISTS，
+     * SQL Server 用 OBJECT_ID 判断），并发跑两个任务也不会互相撞。
+     */
+    private void ensureTable(Connection out, TargetConfig target, String table,
+                             List<String> targets, List<ColumnMeta> sourceColumns) throws SQLException {
+        String qualified = quote(target.targetType(), table);
+        try (Statement probe = out.createStatement()) {
+            probe.executeQuery("SELECT 1 FROM " + qualified + " WHERE 1=0").close();
+            return;
+        } catch (SQLException missing) {
+            String ddl = createTableSql(target, table, targets, sourceColumns);
+            try (Statement create = out.createStatement()) {
+                create.execute(ddl);
+            } catch (SQLException e) {
+                throw new IllegalStateException("目标表 " + table + " 不存在，自动建表失败："
+                        + e.getMessage() + "。DDL：" + ddl, e);
+            }
+        }
+    }
+
+    static String createTableSql(TargetConfig target, String table, List<String> targets,
+                                 List<ColumnMeta> sourceColumns) {
+        TargetType type = target.targetType();
+        List<String> definitions = new ArrayList<>();
+        for (int i = 0; i < targets.size(); i++) {
+            definitions.add(quote(type, targets.get(i)) + " " + columnType(type, sourceColumns.get(i).h2Type()));
+        }
+        String columns = String.join(", ", definitions);
+        if (type == TargetType.STARROCKS_STREAM_LOAD) {
+            // StarRocks 的建表必须有分桶：用第一列做 hash 桶，副本数按单副本，避免 BE 少时建不出来
+            String first = quote(type, targets.get(0));
+            return "CREATE TABLE " + quote(type, table) + " (" + columns + ") ENGINE=OLAP"
+                    + " DUPLICATE KEY(" + first + ")"
+                    + " DISTRIBUTED BY HASH(" + first + ") BUCKETS 1"
+                    + " PROPERTIES(\"replication_num\" = \"1\")";
+        }
+        if (type == TargetType.SQLSERVER) {
+            return "IF OBJECT_ID(N'" + table + "', N'U') IS NULL CREATE TABLE " + quote(type, table)
+                    + " (" + columns + ")";
+        }
+        return "CREATE TABLE IF NOT EXISTS " + quote(type, table) + " (" + columns + ")";
+    }
+
+    /** 上游列类型是 H2 的名字（VARCHAR / DECIMAL(38,10) …），这里翻成目标库的写法。 */
+    static String columnType(TargetType type, String h2Type) {
+        String value = h2Type == null ? "" : h2Type.trim().toUpperCase(java.util.Locale.ROOT);
+        boolean sqlserver = type == TargetType.SQLSERVER;
+        boolean starrocks = type == TargetType.STARROCKS_STREAM_LOAD;
+        if (value.startsWith("DECIMAL") || value.startsWith("NUMERIC")) {
+            return "DECIMAL(38,10)";
+        }
+        if (value.startsWith("BIGINT")) {
+            return "BIGINT";
+        }
+        if (value.startsWith("SMALLINT")) {
+            return "SMALLINT";
+        }
+        if (value.startsWith("TINYINT")) {
+            return "TINYINT";
+        }
+        if (value.startsWith("INTEGER") || value.startsWith("INT")) {
+            return "INT";
+        }
+        if (value.startsWith("DOUBLE") || value.startsWith("FLOAT") || value.startsWith("REAL")) {
+            return sqlserver ? "FLOAT" : "DOUBLE";
+        }
+        if (value.startsWith("BOOLEAN")) {
+            return sqlserver ? "BIT" : starrocks ? "BOOLEAN" : "TINYINT(1)";
+        }
+        if (value.startsWith("TIMESTAMP") || value.startsWith("DATETIME")) {
+            return sqlserver ? "DATETIME2" : "DATETIME";
+        }
+        if (value.startsWith("DATE")) {
+            return "DATE";
+        }
+        if (value.startsWith("TIME")) {
+            return "TIME";
+        }
+        if (value.startsWith("VARBINARY") || value.startsWith("BINARY")) {
+            return sqlserver ? "VARBINARY(MAX)" : starrocks ? "VARCHAR(1024)" : "VARBINARY(1024)";
+        }
+        if (value.startsWith("CLOB") || value.startsWith("TEXT")) {
+            return sqlserver ? "NVARCHAR(MAX)" : starrocks ? "STRING" : "TEXT";
+        }
+        return sqlserver ? "NVARCHAR(1024)" : "VARCHAR(1024)";
     }
 
     // ---------------------------------------------------------------- SQL

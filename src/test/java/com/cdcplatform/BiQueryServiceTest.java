@@ -104,6 +104,20 @@ class BiQueryServiceTest {
     }
 
     @Test
+    void listsDistinctValuesForFiltersAndCustomSort() throws Exception {
+        long id = seedDataset();
+
+        var values = biQuery.values(id, "region", 100);
+
+        assertThat(values.values()).containsExactlyInAnyOrder("华东", "华北");
+        assertThat(values.truncated()).isFalse();
+        // 库表数据集的元数据里行数是 0，这里按需现算
+        assertThat(biQuery.count(id)).isEqualTo(3);
+
+        datasets.delete(id);
+    }
+
+    @Test
     void explainsWhenTheOfflineDatasetHasNoData() {
         long id = datasets.createExtract("空数据集", "", "admin");
 

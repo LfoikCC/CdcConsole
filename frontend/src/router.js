@@ -38,7 +38,13 @@ const router = createRouter({
     { path: '/dev/flows/new', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '新建数据流', requiresAdmin: true, immersive: true } },
     { path: '/dev/flows/:id/edit', component: () => import('./views/dev/FlowEditorView.vue'), meta: { title: '编辑数据流', requiresAdmin: true, immersive: true } },
     { path: '/dev/flows/:id', component: () => import('./views/dev/FlowDetailView.vue'), meta: { title: '数据流详情' } },
-    { path: '/dev/flows/:id/runs/:runId', component: () => import('./views/dev/FlowRunView.vue'), meta: { title: '运行详情' } }
+    { path: '/dev/flows/:id/runs/:runId', component: () => import('./views/dev/FlowRunView.vue'), meta: { title: '运行详情' } },
+
+    // 数据分析：`/edit` 必须排在 `:id` 之前，否则会被当成 id 解析
+    { path: '/bi', redirect: '/bi/dashboards' },
+    { path: '/bi/dashboards', component: () => import('./views/bi/DashboardsView.vue'), meta: { title: '数据看板' } },
+    { path: '/bi/dashboards/:id/edit', component: () => import('./views/bi/DashboardEditorView.vue'), meta: { title: '编辑看板', requiresAdmin: true, immersive: true } },
+    { path: '/bi/dashboards/:id', component: () => import('./views/bi/DashboardDetailView.vue'), meta: { title: '看板详情' } }
   ]
 })
 router.beforeEach(async to => {

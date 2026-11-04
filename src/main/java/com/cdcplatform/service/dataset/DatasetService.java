@@ -5,6 +5,7 @@ import com.cdcplatform.model.Account;
 import com.cdcplatform.model.Types.Capability;
 import com.cdcplatform.model.dataset.Dataset;
 import com.cdcplatform.model.dataset.DatasetColumn;
+import com.cdcplatform.repository.BiDashboardRepository;
 import com.cdcplatform.repository.ConfigRepository;
 import com.cdcplatform.repository.DatasetRepository;
 import com.cdcplatform.service.account.AccountAdapter;
@@ -36,16 +37,18 @@ public class DatasetService {
     private final DevNodeReader reader;
     private final DevTempTableStore datasetStore;
     private final DatasetProperties props;
+    private final BiDashboardRepository biDashboards;
 
     public DatasetService(DatasetRepository datasets, ConfigRepository configs, AccountAdapter adapter,
                           DevNodeReader reader, @Qualifier("datasetTableStore") DevTempTableStore datasetStore,
-                          DatasetProperties props) {
+                          DatasetProperties props, BiDashboardRepository biDashboards) {
         this.datasets = datasets;
         this.configs = configs;
         this.adapter = adapter;
         this.reader = reader;
         this.datasetStore = datasetStore;
         this.props = props;
+        this.biDashboards = biDashboards;
     }
 
     public List<Dataset> list(String q, String type) {
@@ -204,6 +207,11 @@ public class DatasetService {
         Dataset dataset = datasets.dataset(id);
         if (datasets.referencedByFlow(id)) {
             throw new IllegalStateException("数据集被数据流引用，请先解除引用");
+        }
+        // 看板卡片只靠外键 SET NULL 的话，图表会静默变空，比报错难排查得多
+        long dashboards = biDashboards.referencingDashboards(id);
+        if (dashboards > 0) {
+            throw new IllegalStateException("数据集被 " + dashboards + " 个看板引用，请先移除相关卡片");
         }
         if (dataset.storageTable() != null) {
             datasetStore.drop(dataset.storageTable());

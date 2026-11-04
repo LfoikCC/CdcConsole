@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { ChevronDown } from 'lucide-vue-next'
 import { api } from '../../api'
 import { CdcMessage } from '../ui/feedback'
 import {
@@ -30,6 +31,7 @@ const draft = ref(clone(props.node.config || {}))
 const nodeName = ref(props.node.name || meta.value.label)
 const tables = ref([])
 const targetTables = ref([])
+const tableMenuOpen = ref(false)
 const localDatasets = ref([])
 const creatingDataset = ref(false)
 const newDatasetName = ref('')
@@ -153,6 +155,16 @@ function onTargetTableChange(value) {
   draft.value.keyColumns = []
   draft.value.targetColumns = []
   syncTargetMeta()
+}
+
+/** 表名可以手填：库里还没有这张表时，运行会按上游结构自动建表。 */
+function onTargetTableInput(value) {
+  onTargetTableChange(String(value || '').trim())
+}
+
+function pickTargetTable(name) {
+  tableMenuOpen.value = false
+  onTargetTableChange(name)
 }
 
 // ------------------------------------------------------------- operators
@@ -716,10 +728,20 @@ defineExpose({ snapshot })
             </cdc-select>
           </cdc-form-item>
           <cdc-form-item label="目标表" required>
-            <cdc-select :model-value="draft.table" filterable placeholder="选择目标表"
-                        @update:model-value="onTargetTableChange">
-              <cdc-option v-for="item in targetTables" :key="item.table" :label="item.table" :value="item.table"/>
-            </cdc-select>
+            <div class="nd-combo">
+              <cdc-input :model-value="draft.table" placeholder="输入或选择表名"
+                         @update:model-value="onTargetTableInput"/>
+              <button type="button" class="icon-btn" aria-label="选择已有表" title="选择已有表"
+                      @click="tableMenuOpen = !tableMenuOpen">
+                <ChevronDown :size="14"/>
+              </button>
+              <div v-if="tableMenuOpen" class="nd-combo-menu">
+                <button v-for="item in targetTables" :key="item.table" type="button"
+                        @click="pickTargetTable(item.table)">{{ item.table }}</button>
+                <span v-if="!targetTables.length" class="nd-combo-empty">没有可选表</span>
+              </div>
+            </div>
+            <div class="form-help">表不存在时按上游结构自动建表</div>
           </cdc-form-item>
           <cdc-form-item label="写入模式">
             <cdc-select :model-value="draft.mode || 'OVERWRITE'"

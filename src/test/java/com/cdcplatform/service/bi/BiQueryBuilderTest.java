@@ -59,7 +59,7 @@ class BiQueryBuilderTest {
         // SQL Server 没有 LIMIT，而且 OFFSET/FETCH 强制要求 ORDER BY
         assertThat(plan.sql()).isEqualTo("SELECT [region] AS c0, SUM([amount]) AS m0 FROM [dbo].[orders]"
                 + " GROUP BY [region] ORDER BY m0 DESC OFFSET 0 ROWS FETCH NEXT 51 ROWS ONLY");
-        assertThat(plan.labels()).containsExactly("region", "SUM(amount)");
+        assertThat(plan.labels()).containsExactly("region", "求和(amount)");
     }
 
     @Test
@@ -112,6 +112,39 @@ class BiQueryBuilderTest {
     }
 
     @Test
+    void usesTheDimensionAliasAsItsLabel() {
+        var plan = builder.build(mysqlTable(),
+                CardConfig.of(List.of(new Dimension("region", "区域")),
+                        List.of(new Metric("amount", "SUM", null))), 5000);
+
+        // 别名只影响展示名，SQL 里还是按真实列分组
+        assertThat(plan.sql()).isEqualTo(
+                "SELECT `region` AS c0, SUM(`amount`) AS m0 FROM `CDC-SOURCE`.`Orders` GROUP BY `region` LIMIT 201");
+        assertThat(plan.labels()).containsExactly("区域", "求和(amount)");
+    }
+
+    @Test
+    void keepsRawValuesWhenAggregationIsNone() {
+        var plan = builder.build(mysqlTable(),
+                CardConfig.of(List.of(new Dimension("region"), new Dimension("status", "状态")),
+                        List.of(new Metric("amount", "NONE", "金额"))), 5000);
+
+        // 无处理 = 原样取列；有维度时它必须进 GROUP BY，否则 SQL 直接报错
+        assertThat(plan.sql()).isEqualTo("SELECT `region` AS c0, `status` AS c1, `amount` AS m0"
+                + " FROM `CDC-SOURCE`.`Orders` GROUP BY `region`, `status`, `amount` LIMIT 201");
+        assertThat(plan.labels()).containsExactly("region", "状态", "金额");
+    }
+
+    @Test
+    void doesNotAggregateOrGroupWhenNothingIsAggregated() {
+        var plan = builder.build(mysqlTable(),
+                CardConfig.of(List.of(), List.of(new Metric("amount", "NONE", null))), 5000);
+
+        assertThat(plan.sql()).isEqualTo("SELECT `amount` AS m0 FROM `CDC-SOURCE`.`Orders` LIMIT 201");
+        assertThat(plan.labels()).containsExactly("amount");
+    }
+
+    @Test
     void skipsGroupByWhenThereIsNoMetricOrNoDimension() {
         var dimensionOnly = builder.build(mysqlTable(),
                 CardConfig.of(List.of(new Dimension("region")), List.of()), 5000);
@@ -138,6 +171,96 @@ class BiQueryBuilderTest {
                 + " WHERE `status` = ? AND `amount` > ? AND `region` IS NOT NULL AND `region` IN (?, ?)"
                 + " GROUP BY `region` LIMIT 11");
         assertThat(plan.params()).containsExactly("已支付", 100, "华东", "华北");
+    }
+
+    @Test
+    void supportsRangeFilters() {
+        var both = builder.build(mysqlTable(),
+                new CardConfig(List.of(new Dimension("region")),
+                        List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("amount", "BETWEEN", List.of(100, 500))), null, 10), 5000);
+        assertThat(both.sql()).contains("WHERE `amount` BETWEEN ? AND ?");
+        assertThat(both.params()).containsExactly(100, 500);
+
+        // 只填了下限 / 只填了上限
+        var fromOnly = builder.build(mysqlTable(),
+                new CardConfig(List.of(), List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("amount", "BETWEEN", List.of(100))), null, 10), 5000);
+        assertThat(fromOnly.sql()).contains("WHERE `amount` >= ?");
+
+        var empty = builder.build(mysqlTable(),
+                new CardConfig(List.of(), List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("amount", "BETWEEN", List.of())), null, 10), 5000);
+        assertThat(empty.sql()).doesNotContain("WHERE");
+    }
+
+    @Test
+    void selectsFromAListOfValues() {
+        var plan = builder.build(mysqlTable(),
+                new CardConfig(List.of(new Dimension("region")),
+                        List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("status", "IN", List.of("已完成", "处理中"))), null, 10), 5000);
+        assertThat(plan.sql()).contains("WHERE `status` IN (?, ?)");
+        assertThat(plan.params()).containsExactly("已完成", "处理中");
+
+        // 一个新拖进来还没勾选值的筛选不该让卡片变空
+        var nothing = builder.build(mysqlTable(),
+                new CardConfig(List.of(), List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("status", "IN", List.of())), null, 10), 5000);
+        assertThat(nothing.sql()).doesNotContain("WHERE");
+    }
+
+    @Test
+    void supportsExcludeFilters() {
+        var plan = builder.build(mysqlTable(),
+                new CardConfig(List.of(new Dimension("region")),
+                        List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("status", "NOT IN", List.of("已取消", "待付款"))), null, 10), 5000);
+
+        // 排除要保留空值行，否则 NULL NOT IN (...) 会把整行吞掉
+        assertThat(plan.sql()).contains("WHERE (`status` NOT IN (?, ?) OR `status` IS NULL)");
+        assertThat(plan.params()).containsExactly("已取消", "待付款");
+    }
+
+    @Test
+    void countsAllRowsOfADataset() {
+        var plan = builder.countRows(mysqlTable());
+        assertThat(plan.sql()).isEqualTo("SELECT COUNT(*) AS v FROM `CDC-SOURCE`.`Orders`");
+        assertThat(plan.labels()).containsExactly("行数");
+    }
+
+    @Test
+    void sortsByTheCustomOrderOfDimensionValues() {
+        var plan = builder.build(mysqlTable(),
+                new CardConfig(List.of(new Dimension("status")),
+                        List.of(new Metric("amount", "SUM", null)), List.of(),
+                        new Sort("dimension", 0, "asc", List.of("已完成", "处理中", "新建")), 10), 5000);
+
+        assertThat(plan.sql()).endsWith("ORDER BY CASE `status` WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END ASC LIMIT 11");
+        assertThat(plan.params()).containsExactly("已完成", "处理中", "新建");
+    }
+
+    @Test
+    void buildsTheDistinctValueQuery() {
+        var plan = builder.distinctValues(mysqlTable(), "status", 100);
+        assertThat(plan.sql()).isEqualTo("SELECT DISTINCT `status` AS v FROM `CDC-SOURCE`.`Orders`"
+                + " WHERE `status` IS NOT NULL ORDER BY 1 LIMIT 101");
+        assertThat(plan.limit()).isEqualTo(100);
+    }
+
+    @Test
+    void ignoresFiltersThatHaveNoValueYet() {
+        var plan = builder.build(mysqlTable(),
+                CardConfig.of(List.of(new Dimension("region")),
+                        List.of(new Metric("amount", "SUM", null))),
+                5000);
+        var withBlank = builder.build(mysqlTable(),
+                new CardConfig(List.of(new Dimension("region")),
+                        List.of(new Metric("amount", "SUM", null)),
+                        List.of(new Filter("status", "=", "")), null, 200), 5000);
+
+        assertThat(withBlank.sql()).isEqualTo(plan.sql());
+        assertThat(withBlank.params()).isEmpty();
     }
 
     @Test
@@ -177,13 +300,14 @@ class BiQueryBuilderTest {
     @Test
     void parsesCardConfigFromJsonMap() {
         var config = CardConfig.parse(Map.of(
-                "dimensions", List.of(Map.of("column", "region")),
+                "dimensions", List.of(Map.of("column", "region"), Map.of("column", "status", "alias", "状态")),
                 "metrics", List.of(Map.of("column", "amount", "agg", "sum", "alias", "销售额")),
                 "filters", List.of(Map.of("column", "status", "op", "=", "value", "已支付")),
                 "sort", Map.of("by", "metric", "index", 0, "dir", "desc"),
                 "limit", 100));
 
-        assertThat(config.dimensions()).extracting(Dimension::column).containsExactly("region");
+        assertThat(config.dimensions()).extracting(Dimension::column).containsExactly("region", "status");
+        assertThat(config.dimensions().get(1).alias()).isEqualTo("状态");
         assertThat(config.metrics()).extracting(Metric::agg).containsExactly("sum");
         assertThat(config.filters()).hasSize(1);
         assertThat(config.sort().index()).isZero();

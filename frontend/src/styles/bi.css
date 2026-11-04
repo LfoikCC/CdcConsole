@@ -1,0 +1,388 @@
+/* 数据分析：看板列表、编辑器、只读看板。全部复用全局设计令牌，不新增颜色。 */
+
+/* ---------------------------------------------------------------- 编辑器 */
+
+/* 编辑器铺满内容区（与 .content:has(.flow-editor) 同一套做法） */
+.content:has(.bi-editor) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+.bi-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.bi-editor-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); background: var(--card); flex-shrink: 0;
+}
+.bi-editor-head .bi-name {
+  font: 600 14px/1 inherit; padding: 4px 6px; margin: 0; border: 1px solid transparent;
+  border-radius: var(--radius-control); background: transparent; color: var(--fg); min-width: 180px;
+}
+.bi-editor-head .bi-name:hover { border-color: var(--border); }
+.bi-editor-head .bi-name:focus { outline: none; border-color: var(--primary); background: var(--card); }
+.bi-editor-head .bi-dirty { font-size: 11px; color: var(--warning-text); white-space: nowrap; flex-shrink: 0; }
+.bi-editor-head .badge { flex-shrink: 0; }
+.bi-editor-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.bi-editor-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.bi-stage { flex: 1; min-width: 0; overflow: auto; padding: 16px; background: var(--background); }
+.bi-grid { position: relative; width: 100%; }
+
+/* ------------------------------------------------------------------ 卡片 */
+
+.bi-card {
+  position: absolute; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+  /* 瀑布流重排时卡片自己滑过去，看起来才不像「跳」 */
+  transition: left .18s cubic-bezier(.2, .7, .3, 1), top .18s cubic-bezier(.2, .7, .3, 1),
+              width .18s ease, height .18s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.bi-card:hover { box-shadow: 0 6px 18px rgba(16, 24, 40, .09); }
+.bi-card.is-selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent), 0 6px 18px rgba(16, 24, 40, .09);
+  z-index: 3;
+}
+.bi-card.is-dragging {
+  border-color: var(--primary);
+  box-shadow: 0 18px 36px rgba(16, 24, 40, .22);
+  opacity: .96;
+}
+.bi-card.is-editable { cursor: default; }
+.bi-card-head {
+  display: flex; align-items: center; gap: 7px; height: 40px; padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle); font-size: 13px; font-weight: 600;
+  color: var(--fg); cursor: grab; user-select: none; flex-shrink: 0;
+}
+.bi-card-icon { color: var(--muted-fg); flex-shrink: 0; }
+.bi-card:hover .bi-card-icon { color: var(--primary); }
+.bi-card-head:active { cursor: grabbing; }
+/* 可编辑时标题栏左侧露一排小点，提示这里能拖 */
+.bi-card.is-editable .bi-card-head::before {
+  content: ''; flex-shrink: 0; width: 8px; height: 12px; opacity: 0;
+  background-image: radial-gradient(circle, var(--muted-fg) 1px, transparent 1.2px);
+  background-size: 4px 4px;
+  transition: opacity .15s;
+}
+.bi-card.is-editable:hover .bi-card-head::before { opacity: .5; }
+.bi-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-card-body { position: relative; flex: 1; min-height: 0; }
+.bi-card-error {
+  display: flex; align-items: center; gap: 6px; height: 100%; padding: 12px;
+  color: var(--danger-text); font-size: 12px;
+}
+.bi-card-loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted-fg); font-size: 12px; }
+.bi-card-truncated {
+  position: absolute; right: 8px; bottom: 6px; z-index: 2; padding: 2px 8px;
+  border-radius: 10px; background: var(--warning-bg); color: var(--warning-text);
+  font-size: 10.5px; pointer-events: none;
+}
+.bi-card-empty {
+  position: absolute; inset: auto 0 0 0; padding: 6px 10px; color: var(--muted-fg);
+  font-size: 11px; text-align: center; pointer-events: none;
+}
+/* 整块卡片都没有内容时居中提示；表格是「表头在、数据空」，保持底部一行 */
+.bi-card-view.is-empty .bi-card-empty {
+  inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+.bi-card-resize { position: absolute; z-index: 2; background: transparent; opacity: 0; transition: opacity .15s; }
+.bi-card.is-editable:hover .bi-card-resize { opacity: 1; }
+.bi-card-resize.e { top: 0; right: -3px; width: 8px; height: 100%; cursor: ew-resize; }
+.bi-card-resize.s { bottom: -3px; left: 0; height: 8px; width: 100%; cursor: ns-resize; }
+.bi-card-resize.se { right: -3px; bottom: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+.bi-card-resize.se::after {
+  content: ''; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px;
+  border-right: 2px solid var(--border); border-bottom: 2px solid var(--border);
+}
+
+.bi-chart { width: 100%; height: 100%; min-height: 0; }
+.bi-kpi { display: flex; flex-direction: column; justify-content: center; height: 100%; padding: 0 16px; }
+.bi-kpi-value { font: 600 30px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.bi-kpi-label { margin-top: 6px; font-size: 11.5px; color: var(--muted-fg); }
+.bi-text {
+  height: 100%; padding: 12px 14px; overflow: auto; white-space: pre-wrap;
+  font-size: 13px; line-height: 1.7; color: var(--fg);
+}
+.bi-table-wrap { height: 100%; overflow: auto; }
+.bi-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.bi-table th {
+  position: sticky; top: 0; z-index: 1; text-align: left; padding: 6px 10px;
+  background: var(--muted); color: var(--muted-fg); font-weight: 600; white-space: nowrap;
+}
+.bi-table td { padding: 5px 10px; border-top: 1px solid var(--border-subtle); white-space: nowrap; }
+/* 虚拟滚动的占位行：不能有内边距和边框，否则高度算不准 */
+.bi-row-pad td { padding: 0 !important; border: 0 !important; height: auto; }
+
+/* ------------------------------------------------------------ 绘制区通用 */
+
+
+/* ------------------------------------------------------------ 列表与只读 */
+
+.bi-list-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.bi-list-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 14px; min-height: 118px;
+  border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--card);
+  transition: border-color .15s, box-shadow .15s;
+}
+.bi-list-card:hover { border-color: var(--primary); }
+.bi-list-card h3 { margin: 0; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.bi-list-card p { margin: 0; color: var(--muted-fg); font-size: 11.5px; line-height: 1.6; }
+.bi-list-meta { margin-top: auto; display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted-fg); flex-wrap: wrap; }
+.bi-list-meta > span { white-space: nowrap; }
+.bi-list-meta .bi-list-actions { margin-left: auto; display: flex; gap: 6px; opacity: 0; transition: opacity .15s; }
+.bi-list-card:hover .bi-list-actions { opacity: 1; }
+
+.bi-view { display: flex; flex-direction: column; gap: 12px; }
+.bi-view-stage { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px; }
+
+@media (max-width: 1180px) {
+  .bi-card-editor { --field-col: 220px; grid-template-columns: var(--field-col) var(--draw-col) minmax(280px, 1fr); }
+  .bi-ce-visual { grid-column: 1 / -1; border-top: 1px solid var(--border); border-right: 0; }
+  .bi-type-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+
+
+/* ------------------------------------------------------- 卡片编辑器分区 */
+
+
+/* 字段列表：点一下就把字段落到绘制区 */
+.bi-field-search { position: relative; margin: 8px 0 6px; }
+.bi-field-search input {
+  width: 100%; height: 28px; padding: 0 8px 0 24px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--card); color: var(--fg);
+}
+.bi-field-search-icon { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); color: var(--muted-fg); pointer-events: none; }
+.bi-field-search input:focus { outline: none; border-color: var(--primary); }
+.bi-field-list { max-height: 172px; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.bi-field-group {
+  position: sticky; top: 0; z-index: 1; padding: 4px 0 3px;
+  font-size: 10.5px; color: var(--muted-fg); background: var(--card);
+}
+.bi-field {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px;
+  font-size: 12px; color: var(--fg); border-radius: var(--radius-control); text-align: left;
+}
+.bi-field span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-field .bi-field-add { margin-left: auto; opacity: 0; color: var(--primary); flex-shrink: 0; }
+.bi-field:hover { background: var(--brand-subtle); }
+.bi-field:hover .bi-field-add { opacity: 1; }
+.bi-field .bi-field-check { margin-left: auto; color: var(--success); flex-shrink: 0; }
+.bi-field.is-used { color: var(--muted-fg); }
+.bi-field:disabled { opacity: .55; cursor: not-allowed; }
+.bi-field:disabled:hover { background: transparent; }
+
+/* 绘制区：字段茶壶 + 虚线落点 */
+.bi-section { margin-bottom: 10px; }
+.bi-section-head { margin-bottom: 6px; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.bi-zone {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 6px; border: 1px dashed var(--border); border-radius: var(--radius-card);
+  transition: background .12s, border-color .12s;
+}
+.bi-zone.is-hover { border-color: var(--primary); background: var(--brand-subtle); }
+.bi-drop { padding: 4px 0 1px; text-align: center; font-size: 11px; color: var(--muted-fg); }
+
+.bi-pill {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 8px; border-radius: 4px; font-size: 12px; text-align: left;
+  background: var(--muted); color: var(--fg); border: 1px solid transparent;
+}
+.bi-pill > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-pill.tone-dim { background: var(--brand-subtle); color: var(--primary); }
+.bi-pill.tone-measure { background: var(--success-bg); color: var(--success-text); }
+.bi-pill.tone-sort { background: var(--muted); color: var(--fg); }
+.bi-pill:hover { border-color: currentColor; }
+.bi-pill.active { border-color: currentColor; }
+.bi-pill-caret { opacity: .45; flex-shrink: 0; }
+.bi-pill:hover .bi-pill-caret { opacity: .8; }
+
+/* 点茶壶弹出的配置栏 */
+.bi-pill-menu {
+  /* 必须低于 .select-popover 的 400：菜单里的下拉弹层要盖在菜单上面，否则点不到 */
+  position: fixed; z-index: 360; width: 204px; padding: 8px 10px 10px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
+}
+.bi-menu-head {
+  padding-bottom: 6px; font-size: 11px; color: var(--muted-fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bi-menu-section { margin: 8px 0 4px; font-size: 10.5px; color: var(--muted-fg); }
+.bi-menu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.bi-menu-option {
+  padding: 5px 4px; border-radius: 4px; font-size: 11.5px; color: var(--fg); text-align: center;
+  border: 1px solid transparent;
+}
+.bi-menu-option:hover { background: var(--brand-subtle); }
+.bi-menu-option.active { background: var(--brand-subtle); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.bi-menu-item {
+  display: block; width: 100%; margin-top: 6px; padding: 7px 6px;
+  border-radius: 4px; font-size: 12px; text-align: left; color: var(--fg);
+}
+.bi-menu-item:hover { background: var(--muted); }
+.bi-menu-item.danger { color: var(--danger-text); }
+.bi-menu-item.is-active { color: var(--primary); font-weight: 600; }
+.bi-menu-item.has-sub { display: flex; align-items: center; gap: 6px; }
+.bi-menu-item.has-sub > span:first-child { flex: 1; }
+.bi-menu-value { color: var(--muted-fg); font-size: 11px; }
+.bi-menu-item.has-sub.is-active .bi-menu-value { color: var(--primary); }
+
+/* 二级菜单：悬停展开，浮在字段菜单右侧 */
+.bi-menu-sub { position: relative; }
+.bi-submenu {
+  position: absolute; left: calc(100% + 4px); top: -6px; width: 116px; padding: 6px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .16); max-height: 264px; overflow: auto;
+}
+.bi-submenu.wide { width: 172px; }
+.bi-submenu-item {
+  display: block; width: 100%; padding: 6px; border-radius: 4px;
+  font-size: 12px; text-align: left; color: var(--fg);
+}
+.bi-submenu-item:hover { background: var(--brand-subtle); }
+.bi-submenu-item.active { color: var(--primary); font-weight: 600; background: var(--brand-subtle); }
+.bi-submenu-hint { padding: 4px 6px; font-size: 11px; color: var(--muted-fg); }
+
+.bi-menu-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* 选择筛选：取值多选 */
+.bi-check-tools { margin-bottom: 4px; }
+.bi-check-search {
+  width: 100%; height: 26px; padding: 0 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); color: var(--fg);
+}
+.bi-check-search:focus { outline: none; border-color: var(--primary); }
+.bi-check-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.bi-link { font-size: 11.5px; color: var(--primary); }
+.bi-link:hover { text-decoration: underline; }
+.bi-exclude { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted-fg); cursor: pointer; }
+.bi-check-list { max-height: 168px; overflow: auto; margin: 0 -4px; padding: 0 4px; }
+.bi-check {
+  display: flex; align-items: center; gap: 6px; padding: 4px;
+  border-radius: 4px; font-size: 12px; cursor: pointer;
+}
+.bi-check:hover { background: var(--muted); }
+.bi-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 范围筛选：两个输入框 */
+.bi-range { display: flex; align-items: center; gap: 6px; }
+.bi-range .input-control { flex: 1; min-width: 0; }
+.bi-range > span { color: var(--muted-fg); }
+
+/* 自定义排序：上下移动 */
+.bi-custom-list { max-height: 196px; overflow: auto; }
+.bi-custom-row { display: flex; align-items: center; gap: 2px; padding: 1px 0; }
+.bi-custom-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--fg);
+}
+.bi-custom-move {
+  width: 18px; height: 20px; flex-shrink: 0; border-radius: 3px;
+  color: var(--muted-fg); font-size: 11px;
+}
+.bi-custom-move:hover:not(:disabled) { background: var(--brand-subtle); color: var(--primary); }
+.bi-custom-move:disabled { opacity: .3; }
+.bi-pill-menu .input-control { margin-top: 2px; }
+
+/* 可视化区：类型切换 */
+.bi-type-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
+.bi-type-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.bi-type-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  height: 54px; border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--card); color: var(--muted-fg); font-size: 11.5px;
+}
+.bi-type-btn:hover { border-color: var(--primary); color: var(--fg); }
+.bi-type-btn.active { border-color: var(--primary); color: var(--primary); background: var(--brand-subtle); font-weight: 600; }
+
+.bi-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 0; font-size: 12px; color: var(--fg); cursor: pointer;
+}
+.bi-toggle-row + .bi-toggle-row { margin-top: 2px; }
+
+/* --------------------------------------------------- 卡片编辑器（四栏） */
+
+.bi-card-editor {
+  --field-col: 236px;
+  --draw-col: 236px;
+  position: relative;
+  flex: 1; min-height: 0; display: grid;
+  /* 绘制栏宽度由卡片编辑器内联覆盖 --draw-col，默认与左侧字段栏一致 */
+  grid-template-columns: var(--field-col) var(--draw-col) minmax(320px, 1fr) 264px;
+  background: var(--background);
+}
+.bi-ce-col {
+  min-width: 0; overflow: auto; padding: 12px;
+  background: var(--card); border-right: 1px solid var(--border);
+}
+.bi-ce-col:last-child { border-right: 0; }
+.bi-resizer {
+  position: absolute; top: 0; bottom: 0; z-index: 5;
+  left: calc(var(--field-col) + var(--draw-col) - 4px);
+  width: 8px; cursor: col-resize;
+  transition: background .12s;
+}
+/* 悬停时整条边界都亮起来，中间一道细线，明确告诉人这里可以拖 */
+.bi-resizer::after {
+  content: ''; position: absolute; left: 3px; top: 12px; bottom: 12px;
+  width: 2px; border-radius: 1px; background: var(--primary);
+  opacity: 0; transition: opacity .12s;
+}
+.bi-resizer:hover { background: var(--brand-subtle); }
+.bi-resizer:hover::after, .bi-resizer.is-dragging::after { opacity: .55; }
+.bi-resizer.is-dragging { background: var(--brand-subtle-hover); }
+.bi-ce-title {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  font-size: 13px; font-weight: 700; color: var(--fg);
+}
+.bi-ce-title::before { content: ''; width: 3px; height: 13px; border-radius: 2px; background: var(--primary); }
+
+/* 左一：数据集与字段 */
+.bi-ce-ds {
+  border: 1px solid var(--border); border-radius: var(--radius-card);
+  padding: 10px; margin-bottom: 4px; background: var(--card);
+}
+.bi-ce-ds-head { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
+.bi-ce-ds-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; word-break: break-all; }
+.bi-ce-ds-head .icon-btn { flex-shrink: 0; color: var(--muted-fg); }
+.bi-ce-ds-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px; min-width: 0; }
+.bi-ce-ds-meta .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-ce-ds-line { font-size: 11px; color: var(--muted-fg); line-height: 1.8; }
+.bi-ce-fields { padding-bottom: 8px; }
+.bi-field.is-draggable { cursor: grab; user-select: none; }
+.bi-field.is-draggable:active { cursor: grabbing; }
+.bi-field.is-draggable:hover { background: var(--brand-subtle); }
+
+/* 左二：绘制区的落点高亮 */
+
+/* 中间：预览 */
+.bi-ce-preview { display: flex; flex-direction: column; background: var(--background); }
+.bi-ce-preview-head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.bi-ce-preview-head > span:first-child { font-size: 14px; font-weight: 600; }
+.bi-ce-preview-head .muted { font-size: 11px; }
+.bi-ce-preview-body {
+  position: relative; flex: 1; min-height: 220px; display: flex; flex-direction: column;
+  padding: 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
+}
+
+/* 卡片正文容器（画布与预览共用） */
+.bi-card-view { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+/* ------------------------------------------------------- 新建卡片弹窗 */
+
+.bi-picker { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; }
+.bi-picker-right { border-left: 1px solid var(--border); padding-left: 16px; min-height: 300px; }
+.bi-picker-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  height: 100%; min-height: 240px; color: var(--muted-fg); font-size: 12px; text-align: center;
+}
+.bi-picker-right h4 { margin: 0 0 6px; font-size: 14px; word-break: break-all; }
+.bi-picker-tags { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 11px; min-width: 0; }
+.bi-picker-tags .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-picker-grid { display: grid; grid-template-columns: 64px 64px minmax(0, 1fr); gap: 8px; margin: 0 0 12px; }
+.bi-picker-grid dt { font-size: 10.5px; color: var(--muted-fg); }
+.bi-picker-grid dd { margin: 2px 0 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.bi-picker-grid .wide dd { font-size: 12.5px; }
+.bi-picker-fields-title { font-size: 11px; color: var(--muted-fg); margin-bottom: 6px; }
+.bi-picker-field-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 190px; overflow: auto; }
+.bi-picker-field { padding: 2px 8px; border-radius: 10px; background: var(--muted); color: var(--fg); font-size: 11px; }
