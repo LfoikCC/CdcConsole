@@ -1,8 +1,10 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { Pencil } from 'lucide-vue-next'
 import { ChevronDown } from 'lucide-vue-next'
 import { api } from '../../api'
 import { CdcMessage } from '../ui/feedback'
+import SqlEditorDialog from './SqlEditorDialog.vue'
 import {
   AGG_FUNCTIONS, CAST_TYPES, COMPARATORS, MODE_OPTIONS, OPERATOR_LABELS,
   iconOf, metaOf,
@@ -29,7 +31,6 @@ const icon = computed(() => iconOf(props.node))
 const clone = value => JSON.parse(JSON.stringify(value ?? {}))
 const draft = ref(clone(props.node.config || {}))
 const nodeName = ref(props.node.name || meta.value.label)
-const tables = ref([])
 const targetTables = ref([])
 const tableMenuOpen = ref(false)
 const localDatasets = ref([])
@@ -44,30 +45,65 @@ const datasetOptions = computed(() => {
     return true
   })
 })
-const tableMeta = ref(null)
 const targetMeta = ref(null)
 const loading = ref(false)
 const error = ref(null)
+const dbType = ref('')
+const sqlDialogOpen = ref(false)
+const editingName = ref(false)
+const nameDraft = ref('')
+const nameInput = ref(null)
+const headerTitle = computed(() => nodeName.value || (draft.value.operator
+  ? (OPERATOR_LABELS[draft.value.operator] || meta.value.label)
+  : meta.value.label))
 
-/** 数据库输入取数方式：TABLE 选表 / SQL 自定义查询。旧版 SQL 输入节点恒为 SQL。 */
-const sqlMode = computed(() => props.node.type === 'SQL_INPUT' || draft.value.mode === 'SQL')
+function startNameEdit() {
+  nameDraft.value = nodeName.value
+  editingName.value = true
+  nextTick(() => {
+    nameInput.value?.focus()
+    nameInput.value?.select()
+  })
+}
 
-function onModeChange(mode) {
-  draft.value.mode = mode
-  if (mode === 'SQL') return
-  // 从 SQL 切回选表：表字段可能是空的，按已有源连接重新拉一遍
-  if (draft.value.sourceId) loadTables()
+function commitName() {
+  const fallback = draft.value.operator ? (OPERATOR_LABELS[draft.value.operator] || meta.value.label) : meta.value.label
+  nodeName.value = nameDraft.value.trim() || fallback
+  editingName.value = false
+}
+
+function cancelName() {
+  editingName.value = false
+}
+const DB_TYPE_LABELS = { MYSQL: 'MySQL', SQLSERVER: 'SQL Server', STARROCKS: 'StarRocks' }
+const dbTypes = computed(() => [...new Set(props.sources.map(item => item.dbType).filter(Boolean))])
+const filteredSources = computed(() => props.sources.filter(item => !dbType.value || item.dbType === dbType.value))
+const sqlLines = computed(() => (draft.value.sql || '').split('\n'))
+
+function initDbType() {
+  const selected = props.sources.find(item => item.id === draft.value.sourceId)
+  dbType.value = selected?.dbType || (dbTypes.value.length === 1 ? dbTypes.value[0] : '')
+}
+
+function onDbTypeChange(value) {
+  dbType.value = value
+  const selected = props.sources.find(item => item.id === draft.value.sourceId)
+  if (selected && selected.dbType !== value) {
+    draft.value.sourceId = null
+    draft.value.table = ''
+    draft.value.columns = []
+  }
 }
 
 watch(() => props.node, () => {
   draft.value = clone(props.node.config || {})
   nodeName.value = props.node.name || metaOf(props.node.type).label
-  tableMeta.value = null
   targetMeta.value = null
-  tables.value = []
   targetTables.value = []
   if (props.node.type === 'DB_INPUT' || props.node.type === 'SQL_INPUT') {
-    if (draft.value.sourceId && !sqlMode.value) loadTables()
+    if (draft.value.previewMode == null) draft.value.previewMode = 'LIMIT'
+    if (draft.value.limit == null) draft.value.limit = 10000
+    initDbType()
   }
   if (props.node.type === 'DB_OUTPUT' && draft.value.targetId) loadTargetTables()
   if (props.node.type === 'OPERATOR') emit('need-upstream')
@@ -85,30 +121,10 @@ async function guard(work) {
   }
 }
 
-async function loadTables() {
-  if (!draft.value.sourceId) return
-  // 不再传 database：表清单直接取账户上配置的那个库
-  tables.value = await guard(() => api(`/sources/${draft.value.sourceId}/tables`)) || []
-  syncTableMeta()
-}
-
 async function loadTargetTables() {
   if (!draft.value.targetId) return
   targetTables.value = await guard(() => api(`/targets/${draft.value.targetId}/tables`)) || []
   syncTargetMeta()
-}
-
-function syncTableMeta() {
-  const found = tables.value.find(item => item.table === draft.value.table)
-  tableMeta.value = found || null
-  if (found) {
-    if (!Array.isArray(draft.value.columns) || draft.value.columns.length === 0) {
-      draft.value.columns = [...(found.columns || [])]
-    }
-    if (!draft.value.targetColumns || draft.value.targetColumns.length === 0) {
-      draft.value.targetColumns = [...(found.columns || [])]
-    }
-  }
 }
 
 function syncTargetMeta() {
@@ -125,20 +141,12 @@ function syncTargetMeta() {
 }
 
 async function onSourceChange(value) {
+  const selected = props.sources.find(item => item.id === value)
+  if (selected?.dbType) dbType.value = selected.dbType
   draft.value.sourceId = value
   draft.value.table = ''
   draft.value.columns = []
   draft.value.targetColumns = []
-  tableMeta.value = null
-  tables.value = []
-  await loadTables()
-}
-
-async function onTableChange(value) {
-  draft.value.table = value
-  draft.value.columns = []
-  draft.value.targetColumns = []
-  syncTableMeta()
 }
 
 async function onTargetChange(value) {
@@ -314,6 +322,10 @@ function snapshot() {
 }
 
 function apply() {
+  if (editingName.value) commitName()
+  if (props.node.type === 'DB_INPUT' && String(draft.value.sql || '').trim()) {
+    draft.value.mode = 'SQL'
+  }
   const fallback = draft.value.operator
     ? (OPERATOR_LABELS[draft.value.operator] || meta.value.label)
     : meta.value.label
@@ -329,8 +341,12 @@ defineExpose({ snapshot })
   <aside class="node-drawer" aria-label="节点配置">
     <header class="nd-head">
       <span class="nd-icon"><component :is="icon" :size="15"/></span>
-      <div>
-        <strong>{{ node.type === 'OPERATOR' ? (OPERATOR_LABELS[draft.operator] || meta.label) : meta.label }}</strong>
+      <div class="nd-title">
+        <strong v-if="!editingName" class="nd-name" title="点击修改节点名称" @click="startNameEdit">
+          {{ headerTitle }}<Pencil :size="11"/>
+        </strong>
+        <input v-else ref="nameInput" v-model="nameDraft" class="nd-name-input"
+               @keydown.enter.prevent="commitName" @keydown.esc.prevent="cancelName" @blur="editingName && commitName()"/>
         <small>{{ node.id }}</small>
       </div>
       <button class="icon-btn" aria-label="关闭" @click="emit('close')">✕</button>
@@ -338,11 +354,6 @@ defineExpose({ snapshot })
 
     <div class="nd-body">
       <cdc-form>
-        <cdc-form-item label="节点名称">
-          <cdc-input v-model="nodeName" :placeholder="meta.label"/>
-          <div class="form-help">画布卡片上显示的名字，留空则用默认名称</div>
-        </cdc-form-item>
-
         <!-- 数据集输入 -->
         <template v-if="node.type === 'DATASET_INPUT'">
           <cdc-form-item label="数据集" required>
@@ -355,48 +366,48 @@ defineExpose({ snapshot })
           </cdc-form-item>
         </template>
 
-        <!-- 数据库输入：选表 / 自定义 SQL 两种取数方式 -->
+        <!-- 数据库输入：数据库类型 → 数据账户 → SQL 查询 -->
         <template v-else-if="node.type === 'DB_INPUT' || node.type === 'SQL_INPUT'">
-          <cdc-form-item label="源连接" required>
-            <cdc-select :model-value="draft.sourceId" filterable placeholder="选择源连接"
-                        @update:model-value="onSourceChange">
-              <cdc-option v-for="item in sources" :key="item.id" :label="item.name" :value="item.id"/>
-            </cdc-select>
-            <div class="form-help">数据库在数据账户上维护，表清单直接来自该账户</div>
-          </cdc-form-item>
-          <cdc-form-item v-if="node.type === 'DB_INPUT'" label="取数方式">
-            <cdc-radio-group :model-value="draft.mode || 'TABLE'" @update:model-value="onModeChange">
-              <cdc-radio-button value="TABLE">选择表</cdc-radio-button>
-              <cdc-radio-button value="SQL">自定义 SQL</cdc-radio-button>
-            </cdc-radio-group>
+          <div class="nd-two-cols">
+            <cdc-form-item label="数据库类型" required>
+              <cdc-select v-model="dbType" placeholder="选择类型" @update:model-value="onDbTypeChange">
+                <cdc-option v-for="type in dbTypes" :key="type" :label="DB_TYPE_LABELS[type] || type" :value="type"/>
+              </cdc-select>
+            </cdc-form-item>
+            <cdc-form-item label="数据账户" required>
+              <cdc-select :model-value="draft.sourceId" filterable placeholder="选择账户"
+                          @update:model-value="onSourceChange">
+                <cdc-option v-for="item in filteredSources" :key="item.id" :label="item.name" :value="item.id"/>
+              </cdc-select>
+            </cdc-form-item>
+          </div>
+          <div class="form-help nd-row-help">账户的数据库在「数据准备 → 连接账户」维护</div>
+
+          <cdc-form-item label="SQL 查询" required>
+            <div class="nd-sql-preview" @click="sqlDialogOpen = true">
+              <div class="nd-sql-gutter">
+                <span v-for="(line, index) in sqlLines" :key="index">{{ index + 1 }}</span>
+              </div>
+              <pre>{{ draft.sql || '点击编写 SQL 查询' }}</pre>
+              <button type="button" class="nd-sql-edit">编辑</button>
+            </div>
+            <div class="form-help">支持 SELECT / WITH 查询；点击查询框打开函数与表目录</div>
           </cdc-form-item>
 
-          <template v-if="sqlMode">
-            <cdc-form-item label="查询 SQL" required>
-              <textarea v-model="draft.sql" class="nd-sql" rows="10"
-                        placeholder="SELECT id, amount FROM orders WHERE amount > 100"/>
-              <div class="form-help">仅支持单条 SELECT / WITH 查询</div>
-            </cdc-form-item>
-          </template>
-          <template v-else>
-            <cdc-form-item label="表" required>
-              <cdc-select :model-value="draft.table" filterable placeholder="选择表"
-                          @update:model-value="onTableChange">
-                <cdc-option v-for="item in tables" :key="item.table" :label="`${item.schema || ''}${item.schema ? '.' : ''}${item.table}`" :value="item.table"/>
-              </cdc-select>
-            </cdc-form-item>
-            <cdc-form-item v-if="tableMeta" label="读取字段">
-              <cdc-select :model-value="draft.columns" multiple filterable placeholder="全部字段"
-                          @update:model-value="value => (draft.columns = value)">
-                <cdc-option v-for="column in tableMeta.columns" :key="column" :label="column" :value="column"/>
-              </cdc-select>
-              <div class="form-help">留空表示读取全部字段</div>
-            </cdc-form-item>
-            <cdc-form-item label="过滤条件">
-              <cdc-input v-model="draft.where" placeholder="amount > 100"/>
-              <div class="form-help">直接拼进 WHERE，不要写 WHERE 关键字</div>
-            </cdc-form-item>
-          </template>
+          <cdc-form-item label="预览设置">
+            <cdc-select :model-value="draft.previewMode || 'LIMIT'"
+                        @update:model-value="value => (draft.previewMode = value)">
+              <cdc-option label="部分数据 - 限制数据行数" value="LIMIT"/>
+              <cdc-option label="全部数据" value="ALL"/>
+            </cdc-select>
+          </cdc-form-item>
+          <cdc-form-item v-if="(draft.previewMode || 'LIMIT') !== 'ALL'" label="缓存数据行数">
+            <cdc-input-number v-model="draft.limit" :min="1" :max="2000000" style="width:100%"/>
+            <div class="form-help">运行时最多读取的行数，默认 10000</div>
+          </cdc-form-item>
+
+          <SqlEditorDialog v-model="sqlDialogOpen" :sql="draft.sql || ''" :source-id="draft.sourceId"
+                           :db-type="dbType || 'MYSQL'" @confirm="value => (draft.sql = value)"/>
         </template>
 
         <!-- 基础算子 -->

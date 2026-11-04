@@ -214,8 +214,8 @@
 /* ------------------------------------------------------------------ 抽屉 */
 
 .node-drawer {
-  /* 与 .flow-palette 同宽：编辑时接管左栏，画布宽度不跳动 */
-  width: var(--flow-side-width); flex-shrink: 0; min-width: 0;
+  /* 比调色板宽：配置项、SQL 预览和两列下拉需要更多横向空间 */
+  width: 400px; flex-shrink: 0; min-width: 0;
   display: flex; flex-direction: column;
   background: var(--card); border-right: 1px solid var(--border);
 }
@@ -238,8 +238,16 @@
   display: flex; align-items: center; gap: 10px;
   padding: 12px 14px; border-bottom: 1px solid var(--border);
 }
-.nd-head > div { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.nd-head > div { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex: 1; }
 .nd-head strong { font-size: 13px; }
+.nd-name { display: inline-flex; align-items: center; gap: 5px; cursor: text; max-width: 100%; }
+.nd-name:hover { color: var(--primary); }
+.nd-name svg { opacity: .45; }
+.nd-name:hover svg { opacity: 1; }
+.nd-name-input {
+  width: 100%; padding: 1px 0; border: 0; border-bottom: 1px solid var(--primary);
+  outline: 0; background: transparent; color: var(--fg); font-size: 13px; font-weight: 600;
+}
 .nd-head small { font: 11px var(--mono); color: var(--muted-fg); }
 .nd-head .icon-btn { margin-left: auto; }
 .nd-icon {
@@ -255,6 +263,28 @@
 .nd-foot .nd-delete { margin-right: auto; }
 .nd-new-dataset { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .nd-new-dataset .btn { white-space: nowrap; }
+.nd-two-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.nd-row-help { margin: -6px 0 12px; }
+
+/* 数据库输入：SQL 预览框（点击打开函数/表目录浮窗） */
+.nd-sql-preview {
+  position: relative; display: flex; max-height: 280px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card); cursor: text;
+}
+.nd-sql-gutter {
+  display: flex; flex-direction: column; flex: 0 0 34px; padding: 10px 6px;
+  text-align: right; color: var(--muted-fg); background: var(--muted);
+  font: 12px/1.7 var(--mono); user-select: none;
+}
+.nd-sql-preview pre {
+  flex: 1; min-width: 0; margin: 0; padding: 10px 42px 10px 12px;
+  font: 12px/1.7 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--fg);
+}
+.nd-sql-edit {
+  position: absolute; top: 8px; right: 8px; padding: 3px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--card); color: var(--muted-fg); font-size: 11px; cursor: pointer;
+}
+.nd-sql-edit:hover { color: var(--fg); background: var(--muted); }
 .nd-sql {
   width: 100%; padding: 8px 10px; font: 12px/1.5 var(--mono);
   color: var(--foreground); background: var(--card);
@@ -310,7 +340,8 @@
 }
 
 @media (max-width: 1000px) {
-  .flow-palette, .node-drawer { width: 200px; }
+  .flow-palette { width: 200px; }
+  .node-drawer { width: 300px; }
 }
 
 

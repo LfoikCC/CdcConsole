@@ -117,8 +117,8 @@ export const NODE_TYPES = {
     label: '数据库输入',
     icon: Database,
     tone: 'src',
-    // mode：TABLE 选表 / SQL 自定义查询。两种取数方式收在同一个节点里
-    defaults: () => ({ sourceId: null, mode: 'TABLE', database: '', table: '', columns: [], where: '', sql: '' }),
+    // 数据库输入统一走 SQL 查询；previewMode/limit 控制运行时的取数上限
+    defaults: () => ({ sourceId: null, mode: 'SQL', database: '', sql: '', previewMode: 'LIMIT', limit: 10000 }),
     // 带库名前缀：标题已经显示节点名，副标题再重复表名就没有信息量了
     subtitle: config => {
       if (config.mode === 'SQL') return config.sql ? '自定义查询' : '未填写 SQL'
@@ -130,7 +130,7 @@ export const NODE_TYPES = {
     label: 'SQL 输入',
     icon: Code2,
     tone: 'sql',
-    defaults: () => ({ sourceId: null, mode: 'SQL', database: '', sql: '' }),
+    defaults: () => ({ sourceId: null, mode: 'SQL', database: '', sql: '', previewMode: 'LIMIT', limit: 10000 }),
     subtitle: config => (config.sql ? '自定义查询' : '未填写 SQL')
   },
   OPERATOR: {

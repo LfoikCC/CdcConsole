@@ -199,6 +199,14 @@ public class DevFlowExecutor {
         flows.markFlow(flowId, "SUCCEEDED", written);
     }
 
+    private int rowLimit(Map<String, Object> config) {
+        Object raw = config == null ? null : config.get("limit");
+        if (raw instanceof Number number && number.intValue() > 0) {
+            return Math.min(number.intValue(), props.getMaxRowsPerNode());
+        }
+        return props.getMaxRowsPerNode();
+    }
+
     private void finishCanceled(long runId, long flowId, long written, int succeeded, long started) {
         flows.finishRun(runId, "CANCELED", written, "运行已取消", succeeded, System.currentTimeMillis() - started);
         flows.markFlow(flowId, "CANCELED", written);
@@ -256,20 +264,20 @@ public class DevFlowExecutor {
                 // 同一个节点支持两种取数方式：选表 / 自定义 SQL
                 if (DevGraphValidator.usesSql(config)) {
                     ReadResult result = reader.readSql(source, text(config.get("database")),
-                            text(config.get("sql")), scope, node.id(), props.getMaxRowsPerNode());
+                            text(config.get("sql")), scope, node.id(), rowLimit(config));
                     yield new NodeResult(result, 0, null);
                 }
                 String database = text(config.get("database"));
                 String table = text(config.get("table"));
                 List<String> columns = stringList(config.get("columns"));
                 ReadResult result = reader.readTable(source, database, table, columns,
-                        text(config.get("where")), scope, node.id(), props.getMaxRowsPerNode());
+                        text(config.get("where")), scope, node.id(), rowLimit(config));
                 yield new NodeResult(result, 0, null);
             }
             case DevGraphValidator.TYPE_SQL_INPUT -> {
                 SourceConfig source = source(requiredId(config, "sourceId", node));
                 ReadResult result = reader.readSql(source, text(config.get("database")),
-                        text(config.get("sql")), scope, node.id(), props.getMaxRowsPerNode());
+                        text(config.get("sql")), scope, node.id(), rowLimit(config));
                 yield new NodeResult(result, 0, null);
             }
             case DevGraphValidator.TYPE_OPERATOR -> runOperator(node, graph, outputs, scope, props.getMaxRowsPerNode());

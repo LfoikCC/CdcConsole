@@ -33,9 +33,10 @@ const filterNode = () => ({
 })
 
 describe('NodeDrawer', () => {
-  it('renames the node when applying', async () => {
+  it('renames the node from the drawer title when applying', async () => {
     const wrapper = mountDrawer(filterNode())
-    await wrapper.find('input').setValue('只看大额订单')
+    await wrapper.find('.nd-name').trigger('click')
+    await wrapper.find('.nd-name-input').setValue('只看大额订单')
     await wrapper.find('.nd-foot .btn-primary').trigger('click')
 
     const payload = wrapper.emitted('apply')[0][0]
@@ -45,7 +46,9 @@ describe('NodeDrawer', () => {
 
   it('falls back to the operator label when the name is blank', async () => {
     const wrapper = mountDrawer({ ...filterNode(), name: '行过滤' })
-    await wrapper.find('input').setValue('   ')
+    await wrapper.find('.nd-name').trigger('click')
+    await wrapper.find('.nd-name-input').setValue('   ')
+    await wrapper.find('.nd-name-input').trigger('blur')
     await wrapper.find('.nd-foot .btn-primary').trigger('click')
 
     expect(wrapper.emitted('apply')[0][0].name).toBe('行过滤')
@@ -153,27 +156,26 @@ describe('NodeDrawer', () => {
     expect(head.text()).toContain('客户（CDC-SOURCE.users）')
   })
 
-  it('switches the database input between picking a table and writing SQL', async () => {
+  it('renders the database input as type, account and SQL query', async () => {
     api.mockResolvedValue([])
     const wrapper = mountDrawer({
       id: 'i1',
       type: 'DB_INPUT',
       name: '数据库输入',
-      config: { sourceId: 1, mode: 'TABLE', database: 'CDC-SOURCE', table: 'orders', columns: [], where: '', sql: '' }
+      config: { sourceId: 1, mode: 'SQL', database: 'CDC-SOURCE', sql: 'SELECT id FROM orders', previewMode: 'LIMIT', limit: 10000 }
     })
 
-    // 默认选表：有「表」下拉，没有 SQL 输入框
-    expect(wrapper.text()).toContain('取数方式')
-    expect(wrapper.find('textarea.nd-sql').exists()).toBe(false)
+    expect(wrapper.text()).toContain('数据库类型')
+    expect(wrapper.text()).toContain('数据账户')
+    expect(wrapper.text()).toContain('SQL 查询')
+    expect(wrapper.text()).toContain('缓存数据行数')
+    expect(wrapper.text()).not.toContain('取数方式')
+    expect(wrapper.find('.nd-sql-preview').text()).toContain('SELECT id FROM orders')
 
-    const sqlButton = wrapper.findAll('button').find(button => button.text() === '自定义 SQL')
-    await sqlButton.trigger('click')
-    expect(wrapper.find('textarea.nd-sql').exists()).toBe(true)
-
-    await wrapper.find('textarea.nd-sql').setValue('SELECT id FROM orders')
     await wrapper.find('.nd-foot .btn-primary').trigger('click')
     const config = wrapper.emitted('apply')[0][0].config
     expect(config.mode).toBe('SQL')
     expect(config.sql).toBe('SELECT id FROM orders')
+    expect(config.limit).toBe(10000)
   })
 })
