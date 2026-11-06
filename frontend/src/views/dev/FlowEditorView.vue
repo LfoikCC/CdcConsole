@@ -220,7 +220,8 @@ function openDrawer(id) {
   upstreamColumns.value = []
   secondUpstreamColumns.value = []
   const node = graph.value.nodes.find(item => item.id === id)
-  if (node?.type === 'OPERATOR') {
+  // 输出节点同样需要上游字段：数据库输出要靠它做字段映射
+  if (node && acceptsInput(node)) {
     loadUpstreamColumns(node)
   }
 }

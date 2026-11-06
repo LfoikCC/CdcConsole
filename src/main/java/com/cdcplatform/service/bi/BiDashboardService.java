@@ -3,6 +3,7 @@ package com.cdcplatform.service.bi;
 import com.cdcplatform.config.BiProperties;
 import com.cdcplatform.model.bi.BiCard;
 import com.cdcplatform.model.bi.BiDashboard;
+import com.cdcplatform.model.bi.BiDashboardFolder;
 import com.cdcplatform.repository.BiDashboardRepository;
 import com.cdcplatform.repository.DatasetRepository;
 import com.cdcplatform.service.bi.BiQueryBuilder.CardConfig;
@@ -12,9 +13,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -40,7 +43,12 @@ public class BiDashboardService {
     public record DashboardData(long elapsedMs, List<CardData> cards) {
     }
 
-    private static final Set<String> TYPES = Set.of("bar", "line", "pie", "table", "kpi", "text");
+    private static final Set<String> TYPES = Set.of(
+            "bar", "hbar", "stack", "line", "area", "combo", "scatter", "pie", "funnel", "table", "kpi", "text");
+    /** 数据表卡片最多能放多少列：够铺宽表，又不至于把查询和渲染拖垮。 */
+    private static final int MAX_TABLE_FIELDS = 50;
+    /** 首页「最近发布 / 最近查看」各显示几个：再多就该去目录里翻了。 */
+    private static final int RECENT_LIMIT = 6;
 
     private final BiDashboardRepository dashboards;
     private final DatasetRepository datasets;
@@ -57,7 +65,92 @@ public class BiDashboardService {
 
     public List<BiDashboard> list(String q, String status, boolean admin) {
         // 未发布的看板只有管理员看得见，所以发布不是装饰性标记
-        return dashboards.dashboards(q, status, !admin);
+        return dashboards.dashboards(q, status, !admin, null, false);
+    }
+
+    /**
+     * 按文件夹列看板。
+     *
+     * @param folder null/空 = 全部；{@code root} = 只在根目录；数字 = 该文件夹及其所有子文件夹
+     */
+    public List<BiDashboard> list(String q, String status, boolean admin, String folder) {
+        boolean rootOnly = "root".equalsIgnoreCase(folder == null ? "" : folder.trim());
+        List<Long> ids = List.of();
+        if (!rootOnly && folder != null && !folder.isBlank()) {
+            ids = subtree(Long.parseLong(folder.trim()));
+        }
+        return dashboards.dashboards(q, status, !admin, ids, rootOnly);
+    }
+
+    /** 首页三块：最近发布、我最近看的、草稿。 */
+    public record Overview(List<BiDashboard> published, List<BiDashboard> viewed, List<BiDashboard> drafts) {
+    }
+
+    public Overview overview(boolean admin, String username) {
+        List<BiDashboard> published = dashboards.recentPublished(RECENT_LIMIT);
+        List<BiDashboard> viewed = dashboards.recentViewed(username, !admin, RECENT_LIMIT);
+        List<BiDashboard> drafts = admin
+                ? dashboards.dashboards(null, "DRAFT", false, null, false).stream().limit(RECENT_LIMIT).toList()
+                : List.of();
+        return new Overview(published, viewed, drafts);
+    }
+
+    /** 记一次浏览：最近查看只跟「谁看的」有关，别人打开不会顶掉我的列表。 */
+    public void recordView(long id, String username) {
+        dashboards.dashboard(id);
+        dashboards.recordView(id, username);
+    }
+
+    // ------------------------------------------------------------- folders
+
+    public List<BiDashboardFolder> folders() {
+        return dashboards.folders();
+    }
+
+    public long createFolder(String name, Long parentId) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("请填写文件夹名称");
+        if (parentId != null) dashboards.folder(parentId);
+        return dashboards.createFolder(name.trim(), parentId);
+    }
+
+    public void renameFolder(long id, String name) {
+        dashboards.folder(id);
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("请填写文件夹名称");
+        dashboards.renameFolder(id, name.trim());
+    }
+
+    /** 删文件夹不删看板：子文件夹和里面的看板都上移到父级。 */
+    public void deleteFolder(long id) {
+        dashboards.folder(id);
+        dashboards.deleteFolder(id);
+    }
+
+    public void move(long id, Long folderId) {
+        dashboards.dashboard(id);
+        if (folderId != null) dashboards.folder(folderId);
+        dashboards.moveToFolder(id, folderId);
+    }
+
+    /** 这个文件夹连同所有后代的 id：选中父目录时，里层子目录的看板也要出现。 */
+    private List<Long> subtree(long root) {
+        List<BiDashboardFolder> all = dashboards.folders();
+        if (all.stream().noneMatch(folder -> folder.id() == root)) {
+            throw new IllegalArgumentException("文件夹 " + root + " 不存在");
+        }
+        Map<Long, List<Long>> children = new LinkedHashMap<>();
+        for (BiDashboardFolder folder : all) {
+            if (folder.parentId() != null) {
+                children.computeIfAbsent(folder.parentId(), key -> new ArrayList<>()).add(folder.id());
+            }
+        }
+        List<Long> ids = new ArrayList<>();
+        List<Long> queue = new ArrayList<>(List.of(root));
+        while (!queue.isEmpty()) {
+            long id = queue.remove(0);
+            ids.add(id);
+            queue.addAll(children.getOrDefault(id, List.of()));
+        }
+        return ids;
     }
 
     public Detail detail(long id, boolean admin) {
@@ -66,11 +159,12 @@ public class BiDashboardService {
         return new Detail(dashboard, dashboards.cards(id));
     }
 
-    public long create(String name, String description, String actor) {
+    public long create(String name, String description, String actor, Long folderId) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("请填写看板名称");
         }
-        return dashboards.create(name.trim(), description == null ? "" : description.trim(), actor);
+        if (folderId != null) dashboards.folder(folderId);
+        return dashboards.create(name.trim(), description == null ? "" : description.trim(), actor, folderId);
     }
 
     public void rename(long id, String name, String description) {
@@ -114,10 +208,45 @@ public class BiDashboardService {
         return new SaveResult(expectedVersion + 1, saved);
     }
 
+    /**
+     * 保存看板级筛选器：同一数据集的卡片取数时会自动带上这些条件。
+     *
+     * <p>单独一个入口而不是塞进卡片保存：筛选器改动不该让卡片的乐观锁版本 +1，
+     * 否则两个人一个调布局、一个调筛选就会互相顶掉。
+     */
+    public void saveFilters(long id, List<Map<String, Object>> filters) {
+        dashboards.dashboard(id);
+        List<Map<String, Object>> safe = filters == null ? List.of() : filters;
+        for (Map<String, Object> filter : safe) {
+            if (filter.get("datasetId") == null || filter.get("column") == null) {
+                throw new IllegalArgumentException("筛选条件缺少数据集或字段");
+            }
+            if (String.valueOf(filter.get("column")).isBlank()) {
+                throw new IllegalArgumentException("筛选条件的字段不能为空");
+            }
+        }
+        dashboards.updateFilters(id, safe);
+    }
+
     /** 一次页面加载把所有卡片的数据取回来：串行执行，一张卡失败不影响其它卡。 */
     public DashboardData data(long id, boolean admin) {
+        return data(id, admin, null);
+    }
+
+    /**
+     * 带使用者当前选择的取数。
+     *
+     * <p>查看页上改筛选器的值不能写回看板定义（那是作者的东西），
+     * 所以由前端把当前这份筛选器发过来，只影响这一次查询。
+     *
+     * @param runtimeFilters 为空表示用看板里存的那份
+     */
+    public DashboardData data(long id, boolean admin, List<Map<String, Object>> runtimeFilters) {
         long started = System.currentTimeMillis();
         Detail detail = detail(id, admin);
+        List<Map<String, Object>> dashboardFilters = runtimeFilters != null
+                ? runtimeFilters
+                : (detail.dashboard().filters() == null ? List.of() : detail.dashboard().filters());
         List<CardData> results = new ArrayList<>();
         for (BiCard card : detail.cards()) {
             if ("text".equals(card.type()) || card.datasetId() == null) {
@@ -125,7 +254,8 @@ public class BiDashboardService {
                 continue;
             }
             try {
-                var result = queryService.query(card.datasetId(), CardConfig.parse(card.config()));
+                var result = queryService.query(card.datasetId(),
+                        CardConfig.parse(withDashboardFilters(card, dashboardFilters)));
                 results.add(new CardData(card.id(), true, result.columns(), result.rows(),
                         result.truncated(), result.elapsedMs(), null));
             } catch (RuntimeException e) {
@@ -133,6 +263,23 @@ public class BiDashboardService {
             }
         }
         return new DashboardData(System.currentTimeMillis() - started, results);
+    }
+
+    /**
+     * 把看板级筛选器并进这张卡的配置：只并命中这张卡的，卡片自己的条件排在前面。
+     * 不直接改 card.config()，卡片对象还要原样回给前端。
+     */
+    private Map<String, Object> withDashboardFilters(BiCard card, List<Map<String, Object>> filters) {
+        if (filters.isEmpty()) return card.config();
+        List<Object> extra = new ArrayList<>(DashboardFilters.conditions(filters, card.datasetId(), card.id()));
+        if (extra.isEmpty()) return card.config();
+        Map<String, Object> config = new LinkedHashMap<>(card.config());
+        List<Object> merged = new ArrayList<>();
+        Object existing = config.get("filters");
+        if (existing instanceof List<?> list) merged.addAll(list);
+        merged.addAll(extra);
+        config.put("filters", merged);
+        return config;
     }
 
     /** 编辑器里显示数据集行数。 */
@@ -189,22 +336,29 @@ public class BiDashboardService {
                         throw new IllegalArgumentException("指标卡「" + title(card) + "」需要一个度量");
                     }
                 }
-                case "pie" -> {
+                case "pie", "funnel" -> {
                     if (dimensions != 1 || metrics != 1) {
-                        throw new IllegalArgumentException("饼图「" + title(card) + "」需要一个维度和一个度量");
+                        throw new IllegalArgumentException("图「" + title(card) + "」需要一个维度和一个度量");
                     }
                 }
-                case "bar", "line" -> {
+                case "bar", "hbar", "stack", "line", "area", "combo" -> {
                     if (dimensions != 1 || metrics < 1 || metrics > 4) {
                         throw new IllegalArgumentException("图「" + title(card) + "」需要一个维度和 1-4 个度量");
+                    }
+                }
+                case "scatter" -> {
+                    // 两个度量分别当 x / y，维度只用来给数据点打标签
+                    if (dimensions != 1 || metrics != 2) {
+                        throw new IllegalArgumentException("散点图「" + title(card) + "」需要一个维度和两个度量");
                     }
                 }
                 case "table" -> {
                     if (dimensions + metrics == 0) {
                         throw new IllegalArgumentException("表格「" + title(card) + "」至少要选一个字段");
                     }
-                    if (dimensions > 8 || metrics > 8) {
-                        throw new IllegalArgumentException("表格「" + title(card) + "」最多 8 个维度 + 8 个度量");
+                    // 宽表按「总字段数」限，维度多还是度量多由用户自己权衡
+                    if (dimensions + metrics > MAX_TABLE_FIELDS) {
+                        throw new IllegalArgumentException("表格「" + title(card) + "」最多 " + MAX_TABLE_FIELDS + " 个字段");
                     }
                 }
                 default -> {

@@ -37,6 +37,9 @@ public class DevFlowExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(DevFlowExecutor.class);
 
+    /** 高性能模式的批次倍数：批大一点，提交次数少一点，写入几十万行时差别明显。 */
+    private static final int FAST_BATCH_FACTOR = 4;
+
     private final DevFlowRepository flows;
     private final ConfigRepository configs;
     private final DevGraphValidator validator;
@@ -292,8 +295,12 @@ public class DevFlowExecutor {
                 };
                 List<String> targetColumns = stringList(config.get("targetColumns"));
                 List<String> keys = stringList(config.get("keyColumns"));
-                var result = writer.write(target, table, mode, upstream.columns(), upstream.table(),
-                        targetColumns, keys, checkpoint);
+                // 高性能模式只是把批次调大、少提交几次；行数与列映射不变
+                boolean fast = Boolean.TRUE.equals(config.get("highPerformance"));
+                int batchSize = fast ? props.getBatchSize() * FAST_BATCH_FACTOR : props.getBatchSize();
+                var options = new DevTargetWriter.WriteOptions(mode, targetColumns, keys,
+                        text(config.get("preSql")), batchSize);
+                var result = writer.write(target, table, options, upstream.columns(), upstream.table(), checkpoint);
                 yield new NodeResult(upstream, result.written(),
                         "写入 " + table + "：" + result.written() + " 行");
             }

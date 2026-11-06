@@ -55,8 +55,12 @@ public class DatasetRepository {
     public List<DatasetColumn> columns(long id) {
         return jdbc.sql("SELECT * FROM cdc_dataset_column WHERE dataset_id=:id ORDER BY ordinal")
                 .param("id", id)
-                .query((rs, n) -> new DatasetColumn(rs.getInt("ordinal"), rs.getString("name"),
-                        rs.getString("data_type"), rs.getBoolean("nullable")))
+                .query((rs, n) -> {
+                    String name = rs.getString("name");
+                    String original = rs.getString("original_name");
+                    return new DatasetColumn(rs.getInt("ordinal"), name, rs.getString("data_type"),
+                            rs.getBoolean("nullable"), original == null || original.isBlank() ? name : original);
+                })
                 .list();
     }
 
@@ -81,6 +85,7 @@ public class DatasetRepository {
                     row.put("dataStartRow", rs.getInt("data_start_row"));
                     row.put("rowCount", rs.getLong("row_count"));
                     row.put("storageTable", rs.getString("storage_table"));
+                    row.put("dedupeKey", rs.getString("dedupe_key"));
                     return row;
                 }).optional().orElse(null);
     }
@@ -104,13 +109,22 @@ public class DatasetRepository {
     public void saveColumns(long datasetId, List<DatasetColumn> columns) {
         jdbc.sql("DELETE FROM cdc_dataset_column WHERE dataset_id=:id").param("id", datasetId).update();
         for (DatasetColumn column : columns) {
-            jdbc.sql("INSERT INTO cdc_dataset_column(dataset_id,ordinal,name,data_type,nullable) " +
-                            "VALUES(:id,:ordinal,:name,:type,:nullable)")
+            jdbc.sql("INSERT INTO cdc_dataset_column(dataset_id,ordinal,name,data_type,nullable,original_name) " +
+                            "VALUES(:id,:ordinal,:name,:type,:nullable,:original)")
                     .param("id", datasetId).param("ordinal", column.ordinal()).param("name", column.name())
-                    .param("type", column.dataType()).param("nullable", column.nullable()).update();
+                    .param("type", column.dataType()).param("nullable", column.nullable())
+                    .param("original", column.originalName()).update();
         }
         jdbc.sql("UPDATE cdc_dataset SET column_count=:count, updated_at=CURRENT_TIMESTAMP WHERE id=:id")
                 .param("count", columns.size()).param("id", datasetId).update();
+    }
+
+    /** 只改展示名；{@code original_name} 留着给数据源与追加匹配用。 */
+    public void updateColumnName(long datasetId, int ordinal, String name) {
+        jdbc.sql("UPDATE cdc_dataset_column SET name=:name WHERE dataset_id=:id AND ordinal=:ordinal")
+                .param("name", name).param("id", datasetId).param("ordinal", ordinal).update();
+        jdbc.sql("UPDATE cdc_dataset SET updated_at=CURRENT_TIMESTAMP WHERE id=:id")
+                .param("id", datasetId).update();
     }
 
     public void updateMeta(long id, String name, String description) {
@@ -145,12 +159,17 @@ public class DatasetRepository {
 
     public void saveSheet(long datasetId, int sheetIndex, String sheetName, int headerRow, int dataStartRow,
                           long rowCount, String storageTable) {
+        saveSheet(datasetId, sheetIndex, sheetName, headerRow, dataStartRow, rowCount, storageTable, null);
+    }
+
+    public void saveSheet(long datasetId, int sheetIndex, String sheetName, int headerRow, int dataStartRow,
+                          long rowCount, String storageTable, String dedupeKey) {
         jdbc.sql("DELETE FROM cdc_dataset_sheet WHERE dataset_id=:id").param("id", datasetId).update();
-        jdbc.sql("INSERT INTO cdc_dataset_sheet(dataset_id,sheet_index,sheet_name,header_row,data_start_row,row_count,storage_table) " +
-                        "VALUES(:id,:index,:name,:header,:start,:rows,:table)")
+        jdbc.sql("INSERT INTO cdc_dataset_sheet(dataset_id,sheet_index,sheet_name,header_row,data_start_row,row_count,storage_table,dedupe_key) " +
+                        "VALUES(:id,:index,:name,:header,:start,:rows,:table,:dedupe)")
                 .param("id", datasetId).param("index", sheetIndex).param("name", sheetName)
                 .param("header", headerRow).param("start", dataStartRow).param("rows", rowCount)
-                .param("table", storageTable).update();
+                .param("table", storageTable).param("dedupe", dedupeKey).update();
     }
 
     public void delete(long id) {

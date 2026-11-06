@@ -72,7 +72,9 @@ public class BiQueryService {
     public Result query(long datasetId, CardConfig config) {
         long started = System.currentTimeMillis();
         Dataset dataset = datasets.dataset(datasetId);
-        BiQueryBuilder.Source source = source(dataset);
+        // 卡片自带的计算字段挂到数据源上，维度和数值按名字引用它们
+        BiQueryBuilder.Source source = builder.withComputed(source(dataset),
+                config == null ? null : config.computed());
         var plan = builder.build(source, config, props.getMaxRows());
         try (Connection connection = open(source, dataset)) {
             // 只读要在建 statement 之前设置：有些驱动一旦开始执行就不再接受
@@ -199,7 +201,11 @@ public class BiQueryService {
                 : dataset.databaseName();
         List<Column> columns = new ArrayList<>();
         for (var column : datasets.columns(dataset.id())) {
-            columns.add(new Column(column.name(), column.name()));
+            // name 是展示名，可被用户改；拼 SQL 必须用原始字段名
+            String physical = column.originalName() == null || column.originalName().isBlank()
+                    ? column.name()
+                    : column.originalName();
+            columns.add(new Column(column.name(), physical));
         }
         return "SQL".equals(dataset.datasetType())
                 ? BiQueryBuilder.Source.sql(config.dbType(), database, dataset.sqlText(), columns)

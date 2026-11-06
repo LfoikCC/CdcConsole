@@ -30,7 +30,7 @@ class DatasetExtractTest {
         assertThat(dataset.rowCount()).isZero();
         assertThat(dataset.columnCount()).isZero();
 
-        assertThatThrownBy(() -> datasets.preview(id, 10))
+        assertThatThrownBy(() -> datasets.rows(id, 0, 50))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("还没有数据");
 

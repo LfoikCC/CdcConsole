@@ -8,8 +8,11 @@ import { can } from '../../auth'
 import BiGrid from '../../components/bi/BiGrid.vue'
 import CardEditor from '../../components/bi/CardEditor.vue'
 import NewCardDialog from '../../components/bi/NewCardDialog.vue'
+import DashboardFilterBar from '../../components/bi/DashboardFilterBar.vue'
+import FilterWizard from '../../components/bi/FilterWizard.vue'
 import { blankConfig, cardMeta, toCardPayload } from '../../components/bi/biCards'
-import { applyMasonry } from '../../components/bi/biLayout'
+import { normalizeFilter } from '../../components/bi/biFilters'
+import { compact, freeSlot, settle } from '../../components/bi/biLayout'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,12 +33,68 @@ const saving = ref(false)
 const publishing = ref(false)
 const loading = ref(true)
 
+// ---------------------------------------------------------------- 看板筛选器
+/** 看板级筛选器：同数据集的卡片取数时会自动带上（后端合并）。 */
+const filters = ref([])
+const filterWizardOpen = ref(false)
+/** 正在编辑的筛选器；null 表示新建。 */
+const editingFilter = ref(null)
+let filterTimer = null
+
+function openFilterWizard(filter = null) {
+  editingFilter.value = filter
+  filterWizardOpen.value = true
+}
+
+/** 向导提交：新增或替换，然后立即保存并重取数据。 */
+async function submitFilter(filter) {
+  const next = editingFilter.value
+    ? filters.value.map(item => (item.id === filter.id ? filter : item))
+    : [...filters.value, filter]
+  const saved = await saveFilters(next)
+  if (saved) {
+    CdcMessage.success(editingFilter.value ? '筛选器已更新' : '筛选器已添加，卡片数据会一起生效')
+    await loadData()
+  }
+}
+
+/**
+ * 筛选栏上直接改值：先本地生效（控件不回弹），再防抖保存。
+ * 每敲一个字就打一次接口太浪费，而且查询也跟着抖。
+ */
+function onFiltersChanged(next) {
+  filters.value = next
+  clearTimeout(filterTimer)
+  filterTimer = setTimeout(async () => {
+    const saved = await saveFilters(filters.value)
+    if (saved) await loadData()
+  }, 450)
+}
+
+async function saveFilters(next) {
+  try {
+    await api(`/bi/dashboards/${route.params.id}/filters`, {
+      method: 'PUT',
+      body: JSON.stringify({ filters: next })
+    })
+    filters.value = next
+    return true
+  } catch (e) {
+    CdcMessage.error(e.message)
+    return false
+  }
+}
+
 let seed = 0
 const nextKey = () => `k${++seed}`
 
 const isAdmin = computed(() => can('admin'))
 const editingCard = computed(() => cards.value.find(card => card._k === editingKey.value) || null)
 const published = computed(() => dashboard.value?.status === 'PUBLISHED')
+/** 本页卡片已经在用的数据集：新建卡片时默认只列这些。 */
+const usedDatasetIds = computed(() => [...new Set(cards.value
+  .map(card => Number(card.datasetId))
+  .filter(id => Number.isFinite(id) && id > 0))])
 
 onMounted(load)
 onBeforeUnmount(() => clearTimeout(titleTimer))
@@ -55,23 +114,30 @@ let titleTimer = null
 
 async function load() {
   loading.value = true
+  let ready = false
   try {
     const [detail, list] = await Promise.all([
       api(`/bi/dashboards/${route.params.id}`),
       api('/datasets?size=100')
     ])
     dashboard.value = detail
+    filters.value = (detail.filters || []).map(normalizeFilter).filter(Boolean)
     name.value = detail.name
     version.value = detail.version
     datasets.value = list.items || []
     // 卡片 id 在保存后会全部重排，本地用一个稳定的 _k 做选中/取数的键
     cards.value = (detail.cards || []).map(card => ({ ...card, _k: nextKey() }))
-    await loadData()
+    // 老布局里可能有卡片上方空着一大截（比如删掉上面那张卡之后）：打开就补上去
+    compact(cards.value)
+    ready = true
   } catch (e) {
     CdcMessage.error(e.message)
   } finally {
     loading.value = false
   }
+  // 取数不 await：一张卡查得慢（甚至数据源连不上）时，
+  // 整页会一直停在「加载中」，连筛选器和布局都动不了
+  if (ready) loadData()
 }
 
 async function loadData() {
@@ -91,13 +157,13 @@ async function loadData() {
 /** 新建卡片：弹窗里填标题选数据集，建完直接进卡片编辑器。 */
 function createCard(payload) {
   const meta = cardMeta(payload.type)
-  // 位置由瀑布流排：新卡片只需要尺寸，追加到末尾即可
+  // 新卡片放进第一个空位；之后可以左右上下自由拖
+  const slot = freeSlot(cards.value, meta.w, meta.h)
   const card = {
     id: null, _k: nextKey(), type: payload.type, title: payload.title, datasetId: payload.datasetId,
-    x: 0, y: 0, w: meta.w, h: meta.h, config: blankConfig(payload.type)
+    x: slot.x, y: slot.y, w: meta.w, h: meta.h, config: blankConfig(payload.type)
   }
   cards.value = [...cards.value, card]
-  applyMasonry(cards.value)
   dialogOpen.value = false
   selectedKey.value = card._k
   editingKey.value = card._k
@@ -132,6 +198,8 @@ async function deleteEditingCard() {
     return
   }
   cards.value = cards.value.filter(item => item._k !== card._k)
+  // 删掉上面那张后，下面的卡立刻补上去，不用等保存
+  compact(cards.value)
   if (selectedKey.value === card._k) selectedKey.value = ''
   editingKey.value = ''
   dirty.value = true
@@ -142,8 +210,10 @@ async function save() {
   saving.value = true
   const index = cards.value.findIndex(card => card._k === editingKey.value)
   try {
-    // 存之前把瀑布流算出来的坐标写回去，后端校验和只读页拿到的都是不重叠的位置
-    applyMasonry(cards.value)
+    // 存之前把重叠的卡推开、再把上方的空洞补掉，
+    // 后端校验和只读页拿到的都是干净且紧凑的位置
+    settle(cards.value)
+    compact(cards.value)
     const body = await api(`/bi/dashboards/${route.params.id}/cards`, {
       method: 'PUT',
       body: JSON.stringify({ version: version.value, cards: cards.value.map(toCardPayload) })
@@ -236,7 +306,7 @@ function markDirty() {
     </div>
 
     <div class="bi-editor-body">
-      <CardEditor :card="editingCard" :datasets="datasets" @change="markDirty"/>
+      <CardEditor :card="editingCard" :datasets="datasets" :dashboard-filters="filters" @change="markDirty"/>
     </div>
   </div>
 
@@ -260,7 +330,11 @@ function markDirty() {
       </div>
     </div>
 
-    <div class="bi-editor-body">
+    <div class="bi-editor-body is-board">
+      <DashboardFilterBar :filters="filters" :datasets="datasets"
+                          @update:filters="onFiltersChanged"
+                          @add="openFilterWizard()"
+                          @edit="openFilterWizard($event)"/>
       <div class="bi-stage">
         <BiGrid :cards="cards" :selected-key="selectedKey" editable
                 :data-map="dataMap" :loading-map="loadingMap"
@@ -272,5 +346,9 @@ function markDirty() {
     </div>
   </div>
 
-  <NewCardDialog v-model="dialogOpen" :datasets="datasets" default-type="bar" @create="createCard"/>
+  <NewCardDialog v-model="dialogOpen" :datasets="datasets" :used-dataset-ids="usedDatasetIds"
+                 default-type="bar" @create="createCard"/>
+
+  <FilterWizard v-model="filterWizardOpen" :filter="editingFilter"
+                :datasets="datasets" :cards="cards" @submit="submitFilter"/>
 </template>

@@ -37,6 +37,19 @@ public class DevTargetWriter {
 
     public enum WriteMode { OVERWRITE, APPEND, UPSERT }
 
+    /**
+     * 一次写入的完整选项。
+     *
+     * @param preSql   写入前要执行的语句，分号分隔；null 表示不执行
+     * @param batchSize 每批提交的行数，0 表示用全局配置
+     */
+    public record WriteOptions(WriteMode mode, List<String> targetColumns, List<String> keyColumns,
+                               String preSql, int batchSize) {
+        public static WriteOptions of(WriteMode mode, List<String> targetColumns, List<String> keyColumns) {
+            return new WriteOptions(mode, targetColumns, keyColumns, null, 0);
+        }
+    }
+
     public record WriteResult(long written) {
     }
 
@@ -60,13 +73,23 @@ public class DevTargetWriter {
     public WriteResult write(TargetConfig target, String table, WriteMode mode,
                              List<ColumnMeta> sourceColumns, String sourceTable,
                              List<String> targetColumns, List<String> keyColumns) {
-        return write(target, table, mode, sourceColumns, sourceTable, targetColumns, keyColumns, () -> { });
+        return write(target, table, WriteOptions.of(mode, targetColumns, keyColumns),
+                sourceColumns, sourceTable, () -> { });
     }
 
     /** 带取消检查点的写入：每批 commit 后调用 checkpoint，抛异常即回滚当前批并终止。 */
     public WriteResult write(TargetConfig target, String table, WriteMode mode,
                              List<ColumnMeta> sourceColumns, String sourceTable,
                              List<String> targetColumns, List<String> keyColumns, Runnable checkpoint) {
+        return write(target, table, WriteOptions.of(mode, targetColumns, keyColumns),
+                sourceColumns, sourceTable, checkpoint);
+    }
+
+    public WriteResult write(TargetConfig target, String table, WriteOptions options,
+                             List<ColumnMeta> sourceColumns, String sourceTable, Runnable checkpoint) {
+        WriteMode mode = options.mode();
+        List<String> targetColumns = options.targetColumns();
+        List<String> keyColumns = options.keyColumns();
         if (target.targetType() == TargetType.KAFKA) {
             throw new IllegalArgumentException("数据库输出节点不能使用 Kafka 目标");
         }
@@ -94,7 +117,8 @@ public class DevTargetWriter {
 
         String url = withTimeouts(probe.targetUrl(target));
         Map<String, Object> config = target.config();
-        int batchSize = Math.max(1, props.getBatchSize());
+        int batchSize = options.batchSize() > 0 ? options.batchSize() : props.getBatchSize();
+        batchSize = Math.max(1, batchSize);
         long written = 0;
 
         try (Connection h2 = dataSource.getConnection();
@@ -103,6 +127,7 @@ public class DevTargetWriter {
             // 目标表只填了名字、库里还没有：按上游结构建出来再写
             ensureTable(out, target, table, targets, sourceColumns);
             out.setAutoCommit(false);
+            runPreSql(out, table, options.preSql());
             if (mode == WriteMode.OVERWRITE) {
                 try (Statement statement = out.createStatement()) {
                     statement.execute(target.targetType() == TargetType.STARROCKS_STREAM_LOAD
@@ -148,6 +173,29 @@ public class DevTargetWriter {
     }
 
     // ---------------------------------------------------------------- 建表
+
+    /**
+     * 执行用户配置的前置 SQL。
+     *
+     * <p>按分号切分后逐条执行；空语句直接跳过。语句在写入的同一个连接里执行，DDL 之外都能随写入一起回滚。
+     * 这里不做语法改写——用户写的就是要跑的，报错时带上语句前缀，避免只看到一句「语法错误」。
+     */
+    private void runPreSql(Connection out, String table, String preSql) throws SQLException {
+        if (preSql == null || preSql.isBlank()) return;
+        try (Statement statement = out.createStatement()) {
+            for (String raw : preSql.split(";")) {
+                String sql = raw.trim();
+                if (sql.isEmpty()) continue;
+                try {
+                    statement.execute(sql);
+                } catch (SQLException e) {
+                    String head = sql.length() > 80 ? sql.substring(0, 80) + "…" : sql;
+                    throw new IllegalStateException("目标表 " + table + " 的前置 SQL 执行失败（" + head + "）："
+                            + e.getMessage(), e);
+                }
+            }
+        }
+    }
 
     /**
      * 表不存在就按上游列建一张。

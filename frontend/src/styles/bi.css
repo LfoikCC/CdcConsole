@@ -15,12 +15,210 @@
   border-radius: var(--radius-control); background: transparent; color: var(--fg); min-width: 180px;
 }
 .bi-editor-head .bi-name:hover { border-color: var(--border); }
-.bi-editor-head .bi-name:focus { outline: none; border-color: var(--primary); background: var(--card); }
+.bi-editor-head .bi-name:focus { outline: none; background: var(--card); }
 .bi-editor-head .bi-dirty { font-size: 11px; color: var(--warning-text); white-space: nowrap; flex-shrink: 0; }
 .bi-editor-head .badge { flex-shrink: 0; }
 .bi-editor-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 .bi-editor-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+/* 看板编辑页多一条筛选器栏：改成纵向，画布继续占满剩余高度 */
+.bi-editor-body.is-board { flex-direction: column; }
+
+/* 看板筛选器：编辑页可增删，只读页只展示 */
+/* ------------------------------------------------------- 看板筛选栏 */
+.bi-filter-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  /* 不能被压缩：筛选器多到换行时，第二行会被 flex 挤掉，看起来像「加了不显示」 */
+  flex: 0 0 auto;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--card);
+}
+.bi-filter-bar.is-collapsed { padding: 6px 14px; }
+
+/* 收起的那个按钮：带数量角标，收起后也能看出筛了几个条件 */
+.bi-filter-toggle {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  padding: 3px 7px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--fg); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.bi-filter-toggle:hover { background: var(--muted); }
+.bi-filter-count {
+  min-width: 15px; padding: 0 4px; border-radius: 8px; background: var(--brand);
+  color: #fff; font-size: 10px; line-height: 15px; text-align: center;
+}
+.bi-filter-caret { transition: transform .15s ease; }
+.bi-filter-caret.is-open { transform: rotate(180deg); }
+
+/* 一个筛选器 = 名称 + 控件 + 两个图标按钮 */
+/* 每个筛选器统一 268×28：长短不齐的筛选栏看着像没排过版。
+   高度必须写死——下拉的 .select-trigger 全局有 min-height:32px，
+   输入框却只有 25px，不钉住高度就会出现「客户比金额高一截」。 */
+.bi-filter-item {
+  display: inline-flex; align-items: center; gap: 4px;
+  width: 268px; height: 28px; box-sizing: border-box; max-width: 100%;
+  padding: 0 3px 0 7px; border-radius: 6px; background: var(--muted);
+}
+.bi-filter-name {
+  flex: 0 0 auto; max-width: 76px; padding: 0 2px; border: 0; border-radius: 3px;
+  background: transparent; color: var(--fg); font-size: 11.5px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bi-filter-name:hover { color: var(--brand); }
+.bi-filter-name.is-static { cursor: default; }
+.bi-filter-name.is-static:hover { color: var(--fg); }
+.bi-filter-control { display: inline-flex; align-items: center; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.bi-filter-control .select-control { width: 100%; min-width: 0; }
+.bi-filter-control .select-trigger {
+  height: 24px; min-height: 0; padding: 0 7px; font-size: 12px;
+}
+.bi-filter-control .input-control { flex: 1 1 0; width: auto; min-width: 0; height: 24px; font-size: 12px; }
+.bi-filter-control .input-control input { height: 24px; padding: 0 7px; font-size: 12px; }
+.bi-filter-control input[type="date"] { width: auto; flex: 1 1 0; }
+.bi-filter-tilde { color: var(--muted-fg); font-size: 11px; }
+
+/* 日期区间：栏上只显示一个按钮，宽度和别的筛选器一致 */
+.bi-filter-date {
+  display: inline-flex; align-items: center; gap: 5px; width: 100%; height: 24px;
+  padding: 0 7px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); color: var(--fg); font-size: 12px; cursor: pointer;
+}
+.bi-filter-date span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.bi-filter-date svg { flex: 0 0 auto; color: var(--muted-fg); }
+.bi-filter-date:hover { border-color: var(--brand); }
+.bi-filter-date:hover span { color: var(--brand); }
+.bi-filter-date.is-open { border-color: var(--brand); }
+
+/* 选择筛选器的下拉：触发器跟日期按钮同高同字号 */
+.bi-fv-trigger {
+  display: inline-flex; align-items: center; gap: 4px; width: 100%; height: 24px;
+  padding: 0 7px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); color: var(--fg); font-size: 12px; cursor: pointer;
+}
+.bi-fv-trigger > span {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+}
+.bi-fv-trigger svg { flex: 0 0 auto; color: var(--muted-fg); }
+.bi-fv-trigger:hover { border-color: var(--brand); }
+.bi-fv-trigger.is-open { border-color: var(--brand); }
+
+/* 面板：搜索 + 全选/排除/已选 + 列表 + 清空/完成，全部 26-28px 一行 */
+.bi-fv-panel {
+  position: fixed; z-index: 430; width: 252px; padding: 6px;
+  font-size: 12px; line-height: 1.4;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+}
+.bi-fv-search {
+  display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); color: var(--muted-fg);
+}
+.bi-fv-search input {
+  flex: 1; min-width: 0; height: 100%; border: 0; background: transparent;
+  color: var(--fg); font-size: 12px; outline: none;
+}
+.bi-fv-tools {
+  display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 2px;
+  font-size: 11.5px; color: var(--fg);
+}
+.bi-fv-check { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+.bi-fv-check input { margin: 0; width: 13px; height: 13px; }
+.bi-fv-count { margin-left: auto; font-size: 11px; color: var(--muted-fg); }
+.bi-fv-list { max-height: 208px; overflow-y: auto; padding: 2px 0; border-top: 1px solid var(--border); }
+.bi-fv-item {
+  display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px;
+  border-radius: 4px; font-size: 12px; color: var(--fg); cursor: pointer;
+}
+.bi-fv-item:hover { background: var(--muted); }
+.bi-fv-item.is-checked { background: var(--brand-subtle); }
+/* 单选：没有复选框，左边距小一档；面板也窄一点，贴着输入框的宽度 */
+.bi-fv-panel.is-single { width: 208px; }
+.bi-fv-item.is-single { padding-left: 8px; border: 0; background: transparent; text-align: left; }
+.bi-fv-item.is-single.is-checked { background: var(--brand-subtle); font-weight: 600; }
+.bi-fv-foot.is-single { border-top: 1px solid var(--border); }
+.bi-fv-item input { margin: 0; width: 13px; height: 13px; }
+.bi-fv-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-fv-empty { margin: 8px 6px; font-size: 11.5px; color: var(--muted-fg); }
+.bi-fv-foot {
+  display: flex; align-items: center; gap: 6px;
+  padding-top: 6px; margin-top: 2px; border-top: 1px solid var(--border);
+}
+.bi-fv-foot .btn { height: 26px; padding: 0 12px; font-size: 12px; }
+
+/* 日期弹层：快捷区间 + 自定义起止 */
+.bi-date-panel {
+  /* 位置由 JS 在下一帧写入；先挪出视口，免得首帧在页面底部闪一下 */
+  position: fixed; z-index: 420; width: 272px; padding: 10px; top: -9999px; left: -9999px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+}
+.bi-date-quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-bottom: 8px; }
+.bi-date-quick .bi-quick-chip { text-align: center; }
+.bi-date-range { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+.bi-date-range .input-control { flex: 1; min-width: 0; height: 26px; font-size: 11.5px; }
+.bi-date-actions { display: flex; align-items: center; gap: 8px; }
+.bi-filter-static { font-size: 11.5px; color: var(--muted-fg); }
+
+.bi-filter-x {
+  display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 50%;
+  background: transparent; color: var(--muted-fg); cursor: pointer;
+}
+.bi-filter-x:hover { background: var(--muted); color: var(--fg); }
+.bi-filter-empty { font-size: 11.5px; color: var(--muted-fg); }
+.bi-filter-add { margin-left: auto; }
+/* 查看页的筛选栏：可以改值，但不能增删，所以只去掉底部那条分隔线 */
+.bi-filter-bar.is-readonly {
+  border: 1px solid var(--border); border-radius: var(--radius-card);
+  padding: 6px 10px;
+}
+.bi-filter-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--brand-subtle); color: var(--fg); font-size: 11.5px;
+}
+
+/* --------------------------------------------- 新建筛选器向导 */
+.bi-filter-types {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  padding: 18px 4px 8px;
+}
+.bi-filter-type {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  height: 84px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--fg); font-size: 12.5px; cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.bi-filter-type:hover { border-color: var(--brand); color: var(--brand); }
+.bi-filter-type.active { border-color: var(--brand); color: var(--brand); background: var(--brand-subtle); }
+.bi-filter-type-hint { grid-column: 1 / -1; margin: 6px 0 0; font-size: 11.5px; color: var(--muted-fg); }
+
+.bi-filter-form { display: flex; flex-direction: column; gap: 10px; padding: 16px 4px 4px; }
+.bi-filter-row { display: flex; align-items: flex-start; gap: 10px; }
+.bi-filter-row > .bi-filter-label {
+  flex: 0 0 64px; padding-top: 6px; font-size: 12px; color: var(--fg); font-weight: 500;
+}
+.bi-filter-row > .input-control { flex: 1; min-width: 0; }
+.bi-filter-inline { display: inline-flex; align-items: center; padding-top: 4px; }
+
+/* 日期快捷区间 */
+.bi-quick-ranges { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; }
+.bi-quick-chip {
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--card); color: var(--fg); font-size: 11.5px; cursor: pointer;
+}
+.bi-quick-chip:hover { border-color: var(--brand); color: var(--brand); }
+.bi-quick-chip.active { border-color: var(--brand); background: var(--brand-subtle); color: var(--brand); }
+
+/* 组合条件 */
+.bi-combo-list { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.bi-combo-row { display: flex; align-items: center; gap: 6px; }
+.bi-combo-row .select-control { flex: 1; min-width: 0; }
+.bi-combo-row .input-control { flex: 1; min-width: 0; }
+
+/* 联动：选卡片 */
+.bi-filter-cards { display: flex; flex-wrap: wrap; gap: 6px 14px; flex: 1; padding-top: 4px; }
+.bi-filter-card { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg); cursor: pointer; }
+.bi-filter-card input { margin: 0; }
+
 .bi-stage { flex: 1; min-width: 0; overflow: auto; padding: 16px; background: var(--background); }
 .bi-grid { position: relative; width: 100%; }
 
@@ -82,6 +280,15 @@
 .bi-card-view.is-empty .bi-card-empty {
   inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px;
 }
+
+/* 字段没配齐：整块卡片居中提示缺什么，不画任何图形（也不取数） */
+.bi-card-view.is-hint { align-items: center; justify-content: center; }
+.bi-card-hint {
+  display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center;
+  gap: 7px; padding: 14px; text-align: center; min-height: 0; width: 100%;
+}
+.bi-card-hint-icon { color: color-mix(in srgb, var(--primary) 52%, var(--muted-fg)); opacity: .8; }
+.bi-card-hint p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted-fg); }
 .bi-card-resize { position: absolute; z-index: 2; background: transparent; opacity: 0; transition: opacity .15s; }
 .bi-card.is-editable:hover .bi-card-resize { opacity: 1; }
 .bi-card-resize.e { top: 0; right: -3px; width: 8px; height: 100%; cursor: ew-resize; }
@@ -100,13 +307,58 @@
   height: 100%; padding: 12px 14px; overflow: auto; white-space: pre-wrap;
   font-size: 13px; line-height: 1.7; color: var(--fg);
 }
-.bi-table-wrap { height: 100%; overflow: auto; }
-.bi-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.bi-table-box { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.bi-table-wrap { flex: 1; min-height: 0; overflow: auto; }
+.bi-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .bi-table th {
-  position: sticky; top: 0; z-index: 1; text-align: left; padding: 6px 10px;
-  background: var(--muted); color: var(--muted-fg); font-weight: 600; white-space: nowrap;
+  position: sticky; top: 0; z-index: 1; text-align: left; padding: 7px 12px;
+  background: var(--muted); color: var(--muted-fg); border-bottom: 1px solid var(--border);
+  font-size: 11.5px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
 }
-.bi-table td { padding: 5px 10px; border-top: 1px solid var(--border-subtle); white-space: nowrap; }
+.bi-table td {
+  padding: 6px 12px; border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+}
+/* 隔行底色按「数据行序号」算，不能用 nth-child：虚拟滚动会插占位行，奇偶会错位 */
+.bi-table tbody tr.bi-row.is-alt td { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.bi-table tbody tr.bi-row:hover td { background: var(--brand-subtle); }
+.bi-table tbody tr.bi-row:last-child td { border-bottom: 0; }
+.bi-table .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.bi-table td.is-blank { color: var(--muted-fg); }
+/* 行序号列：窄一点、灰一点，不跟数据列抢注意力 */
+.bi-table .bi-th-index, .bi-table .bi-td-index {
+  width: 44px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums;
+}
+/* 分页条：贴在卡片底部，只有开了分页才出现（总数 / 页码 / 每页条数 / 跳页） */
+.bi-pager {
+  flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 3px;
+  padding: 6px 10px; border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px; color: var(--muted-fg); background: var(--card);
+}
+.bi-pager-total { margin-right: auto; font-variant-numeric: tabular-nums; }
+.bi-pager-nav, .bi-pager-num {
+  display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 4px;
+  border: 1px solid transparent; border-radius: 4px; background: transparent;
+  color: var(--fg); font-size: 11.5px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.bi-pager-nav:disabled { opacity: .35; cursor: not-allowed; }
+.bi-pager-num:hover, .bi-pager-nav:not(:disabled):hover { background: var(--muted); }
+.bi-pager-num.is-active { border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.bi-pager-gap { padding: 0 2px; color: var(--muted-fg); letter-spacing: .5px; }
+/* 每页行数：自绘下拉，尺寸压到和翻页按钮一样高 */
+.bi-pager-size { width: auto; min-width: 88px; margin-left: 6px; }
+.bi-pager-size .select-trigger {
+  height: 22px; min-height: 0; padding: 0 4px; gap: 2px;
+  border-radius: 4px; font-size: 11.5px;
+}
+.bi-pager-size .select-trigger svg { width: 11px; height: 11px; }
+.bi-pager-jump { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; }
+.bi-pager-jump-input {
+  width: 40px; height: 22px; min-height: 22px; padding: 0 4px; text-align: center;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); color: var(--fg); font-size: 11.5px;
+}
+
 /* 虚拟滚动的占位行：不能有内边距和边框，否则高度算不准 */
 .bi-row-pad td { padding: 0 !important; border: 0 !important; height: auto; }
 
@@ -125,17 +377,88 @@
 .bi-list-card h3 { margin: 0; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
 .bi-list-card p { margin: 0; color: var(--muted-fg); font-size: 11.5px; line-height: 1.6; }
 .bi-list-meta { margin-top: auto; display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted-fg); flex-wrap: wrap; }
-.bi-list-meta > span { white-space: nowrap; }
+.bi-list-meta > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .bi-list-meta .bi-list-actions { margin-left: auto; display: flex; gap: 6px; opacity: 0; transition: opacity .15s; }
 .bi-list-card:hover .bi-list-actions { opacity: 1; }
+
+/* --------------------------------------------- 看板目录 / 概览 */
+
+/* 面包屑：点哪一级跳哪一级 */
+.bi-crumbs {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  margin: -4px 0 10px; font-size: 12px; color: var(--muted-fg);
+}
+.bi-crumb { padding: 2px 6px; border-radius: 4px; color: var(--muted-fg); font-size: 12px; }
+.bi-crumb:hover { background: var(--muted); color: var(--fg); }
+.bi-crumb.is-current { color: var(--fg); font-weight: 600; }
+
+/* 当前目录下的子目录，点一下进去 */
+.bi-subfolders { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.bi-subfolder {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+  font-size: 12px; color: var(--fg);
+}
+.bi-subfolder:hover { border-color: var(--primary); color: var(--primary); }
+
+.page-controls > .bi-tabs { flex: 0 0 auto; margin-bottom: 0; }
+
+/* 概览三块：最近发布 / 最近查看 / 草稿 */
+.bi-overview { display: flex; flex-direction: column; gap: 18px; }
+.bi-block-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.bi-block-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.bi-block-head > span { font-size: 11.5px; color: var(--muted-fg); }
+.bi-block-more {
+  display: inline-flex; align-items: center; gap: 2px; margin-left: auto;
+  font-size: 11.5px; color: var(--muted-fg);
+}
+.bi-block-more:hover { color: var(--primary); }
+.bi-block-empty {
+  margin: 0; padding: 14px; text-align: center; font-size: 12px; color: var(--muted-fg);
+  border: 1px dashed var(--border); border-radius: var(--radius-card);
+}
+
+.bi-mini-row { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); }
+.bi-mini {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--card);
+  transition: border-color .15s, box-shadow .15s;
+}
+.bi-mini:hover { border-color: var(--primary); box-shadow: 0 4px 14px rgba(47, 60, 69, .06); }
+.bi-mini h4 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 600; }
+.bi-mini-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-mini h4 .badge { margin-left: auto; }
+.bi-mini p {
+  margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--muted-fg);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bi-mini-meta { display: flex; align-items: center; gap: 10px; margin-top: auto; font-size: 11px; color: var(--muted-fg); }
+.bi-mini-meta > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.bi-mini-move {
+  display: grid; place-items: center; width: 20px; height: 20px; margin-left: auto;
+  border-radius: 4px; color: var(--muted-fg); opacity: 0;
+}
+.bi-mini:hover .bi-mini-move, .bi-mini-move:focus-visible { opacity: 1; }
+.bi-mini-move:hover { background: var(--muted); color: var(--fg); }
 
 .bi-view { display: flex; flex-direction: column; gap: 12px; }
 .bi-view-stage { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px; }
 
-@media (max-width: 1180px) {
-  .bi-card-editor { --field-col: 220px; grid-template-columns: var(--field-col) var(--draw-col) minmax(280px, 1fr); }
-  .bi-ce-visual { grid-column: 1 / -1; border-top: 1px solid var(--border); border-right: 0; }
-  .bi-type-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+/* 窗口变窄时压列宽，但**保持四栏**：把可视化栏挤到下面会让「预览→改样式」
+   之间来回滚动，用起来比挤一点更难受。窄到压不下去就整块横向滚动。 */
+@media (max-width: 1320px) {
+  .bi-card-editor {
+    --field-col: 208px; --draw-col: 212px;
+    grid-template-columns: var(--field-col) var(--draw-col) minmax(260px, 1fr) 232px;
+  }
+  .bi-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1120px) {
+  .bi-card-editor {
+    grid-template-columns: 196px 200px 300px 216px;
+    overflow-x: auto;
+  }
 }
 
 
@@ -143,22 +466,37 @@
 
 
 /* 字段列表：点一下就把字段落到绘制区 */
-.bi-field-search { position: relative; margin: 8px 0 6px; }
+.bi-field-search { position: relative; display: flex; align-items: center; gap: 4px; margin: 8px 0 6px; }
 .bi-field-search input {
-  width: 100%; height: 28px; padding: 0 8px 0 24px; font-size: 12px;
+  flex: 1; min-width: 0; width: 100%; height: 28px; padding: 0 8px 0 24px; font-size: 12px;
   border: 1px solid var(--border); border-radius: var(--radius-control);
   background: var(--card); color: var(--fg);
 }
 .bi-field-search-icon { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); color: var(--muted-fg); pointer-events: none; }
-.bi-field-search input:focus { outline: none; border-color: var(--primary); }
-.bi-field-list { max-height: 172px; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+/* 搜索框右侧的「+」：新增计算字段 */
+.bi-field-add {
+  flex: 0 0 28px; display: grid; place-items: center; width: 28px; height: 28px;
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--card); color: var(--muted-fg); cursor: pointer;
+}
+.bi-field-add:hover { border-color: var(--primary); color: var(--primary); background: var(--brand-subtle); }
+/* 计算字段行尾的小按钮：点它编辑公式，点行本身还是加进维度/数值 */
+.bi-field-edit {
+  margin-left: auto; display: grid; place-items: center; width: 18px; height: 18px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--muted-fg);
+  opacity: 0; cursor: pointer; flex-shrink: 0;
+}
+.bi-field:hover .bi-field-edit { opacity: 1; }
+.bi-field-edit:hover { color: var(--primary); background: var(--brand-subtle); }
+.bi-field-list { margin: 0 -4px; padding: 0 4px; }
 .bi-field-group {
-  position: sticky; top: 0; z-index: 1; padding: 4px 0 3px;
-  font-size: 10.5px; color: var(--muted-fg); background: var(--card);
+  /* 不再吸顶：滚动字段列表时「维度 / 数值」跟着内容走，别压住上面的字段 */
+  padding: 8px 0 4px; font-size: 11px; font-weight: 600; color: var(--muted-fg);
 }
 .bi-field {
-  display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px;
-  font-size: 12px; color: var(--fg); border-radius: var(--radius-control); text-align: left;
+  /* 一行 24px：字段多的时候一屏能多看几行，和观远的字段列表密度一致 */
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 24px; padding: 0 6px;
+  font-size: 12px; font-weight: 400; color: var(--fg); border-radius: 4px; text-align: left;
 }
 .bi-field span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bi-field .bi-field-add { margin-left: auto; opacity: 0; color: var(--primary); flex-shrink: 0; }
@@ -171,75 +509,136 @@
 
 /* 绘制区：字段茶壶 + 虚线落点 */
 .bi-section { margin-bottom: 10px; }
-.bi-section-head { margin-bottom: 6px; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.bi-section-head {
+  display: flex; align-items: center; gap: 4px; height: 24px; margin-bottom: 4px;
+  font-size: 12px; font-weight: 600; color: var(--muted-fg);
+}
 .bi-zone {
   display: flex; flex-direction: column; gap: 5px;
   padding: 6px; border: 1px dashed var(--border); border-radius: var(--radius-card);
   transition: background .12s, border-color .12s;
 }
-.bi-zone.is-hover { border-color: var(--primary); background: var(--brand-subtle); }
+.bi-zone.is-hover { border-color: var(--primary); }
+/* 落点：一条带「+」的圆角槽位，比整块变色清楚得多 */
+.bi-drop-slot {
+  display: grid; place-items: center; height: 18px; margin: 1px 0;
+  border-radius: 999px; background: var(--brand-subtle); color: var(--primary);
+  font-size: 13px; line-height: 1; font-weight: 600;
+}
+/* 拖动时跟着鼠标的是一小块标签，不是整条字段（默认拖影会盖住半屏，什么都看不见） */
+.bi-drag-ghost {
+  position: fixed; top: -1000px; left: -1000px; z-index: 9999;
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;
+  border-radius: 4px; font-size: 12px; font-weight: 500; white-space: nowrap;
+  background: var(--brand-subtle); color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary), transparent 60%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+}
+.bi-drag-ghost.tone-measure {
+  background: var(--success-bg); color: var(--success-text);
+  border-color: color-mix(in srgb, var(--success), transparent 60%);
+}
 .bi-drop { padding: 4px 0 1px; text-align: center; font-size: 11px; color: var(--muted-fg); }
 
 .bi-pill {
   display: flex; align-items: center; gap: 6px; width: 100%;
-  padding: 6px 8px; border-radius: 4px; font-size: 12px; text-align: left;
+  padding: 6px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; text-align: left;
   background: var(--muted); color: var(--fg); border: 1px solid transparent;
 }
-.bi-pill > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bi-pill > span:not(.bi-pill-x) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bi-pill.tone-dim { background: var(--brand-subtle); color: var(--primary); }
 .bi-pill.tone-measure { background: var(--success-bg); color: var(--success-text); }
 .bi-pill.tone-sort { background: var(--muted); color: var(--fg); }
 .bi-pill:hover { border-color: currentColor; }
 .bi-pill.active { border-color: currentColor; }
+/* 拖动排序：被拖的那块淡一点，落点画一条插入线 */
+.bi-pill.is-drag-source { opacity: .4; }
 .bi-pill-caret { opacity: .45; flex-shrink: 0; }
 .bi-pill:hover .bi-pill-caret { opacity: .8; }
+/* 删除叉和箭头一样大：悬停才出现，平时不占视觉份量 */
+.bi-pill-x {
+  display: none; place-items: center; flex: 0 0 14px; width: 14px; height: 14px;
+  border-radius: 3px; cursor: pointer; opacity: .55;
+}
+.bi-pill:hover .bi-pill-x { display: grid; }
+.bi-pill-x:hover { opacity: 1; background: color-mix(in srgb, currentColor 16%, transparent); }
 
-/* 点茶壶弹出的配置栏 */
+/* 点茶壶弹出的配置栏。行高统一 28px、间距 3px：菜单里一屏能看完，不用滚 */
 .bi-pill-menu {
   /* 必须低于 .select-popover 的 400：菜单里的下拉弹层要盖在菜单上面，否则点不到 */
-  position: fixed; z-index: 360; width: 204px; padding: 8px 10px 10px;
+  position: fixed; z-index: 360; width: 184px; padding: 4px 6px 6px;
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
   box-shadow: 0 12px 32px rgba(0, 0, 0, .16);
 }
 .bi-menu-head {
-  padding-bottom: 6px; font-size: 11px; color: var(--muted-fg);
+  padding: 1px 2px 4px; font-size: 10.5px; color: var(--muted-fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.bi-menu-section { margin: 8px 0 4px; font-size: 10.5px; color: var(--muted-fg); }
-.bi-menu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.bi-menu-section { margin: 6px 0 3px; padding: 0 2px; font-size: 10.5px; color: var(--muted-fg); }
+.bi-menu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
 .bi-menu-option {
-  padding: 5px 4px; border-radius: 4px; font-size: 11.5px; color: var(--fg); text-align: center;
+  height: 26px; padding: 0 4px; border-radius: 4px; font-size: 11.5px; color: var(--fg); text-align: center;
   border: 1px solid transparent;
 }
 .bi-menu-option:hover { background: var(--brand-subtle); }
 .bi-menu-option.active { background: var(--brand-subtle); border-color: var(--primary); color: var(--primary); font-weight: 600; }
 .bi-menu-item {
-  display: block; width: 100%; margin-top: 6px; padding: 7px 6px;
+  display: flex; align-items: center; width: 100%; height: 30px; padding: 0 6px;
   border-radius: 4px; font-size: 12px; text-align: left; color: var(--fg);
 }
+/* 项与项之间一条浅线，和观远一样：不用间距也能分得清，还省高度 */
+.bi-menu-sub + .bi-menu-sub { margin-top: 1px; padding-top: 1px; border-top: 1px solid var(--border-subtle); }
+.bi-menu-head + .bi-menu-sub { border-top: 1px solid var(--border-subtle); margin-top: 1px; padding-top: 1px; }
 .bi-menu-item:hover { background: var(--muted); }
 .bi-menu-item.danger { color: var(--danger-text); }
 .bi-menu-item.is-active { color: var(--primary); font-weight: 600; }
 .bi-menu-item.has-sub { display: flex; align-items: center; gap: 6px; }
 .bi-menu-item.has-sub > span:first-child { flex: 1; }
-.bi-menu-value { color: var(--muted-fg); font-size: 11px; }
+.bi-menu-value { color: var(--muted-fg); font-size: 10.5px; white-space: nowrap; }
+.bi-menu-item.has-sub.is-active { background: var(--brand-subtle); }
 .bi-menu-item.has-sub.is-active .bi-menu-value { color: var(--primary); }
 
-/* 二级菜单：悬停展开，浮在字段菜单右侧 */
+/* 二级菜单：点开、再点关，浮在字段菜单右侧 */
 .bi-menu-sub { position: relative; }
 .bi-submenu {
-  position: absolute; left: calc(100% + 4px); top: -6px; width: 116px; padding: 6px;
+  position: absolute; left: calc(100% + 4px); top: -6px; width: 112px; padding: 4px;
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card);
   box-shadow: 0 12px 32px rgba(0, 0, 0, .16); max-height: 264px; overflow: auto;
 }
-.bi-submenu.wide { width: 172px; }
+.bi-submenu.wide { width: 168px; }
 .bi-submenu-item {
-  display: block; width: 100%; padding: 6px; border-radius: 4px;
-  font-size: 12px; text-align: left; color: var(--fg);
+  display: flex; align-items: center; width: 100%; height: 26px; padding: 0 8px; border-radius: 4px;
+  font-size: 11.5px; text-align: left; color: var(--fg);
 }
 .bi-submenu-item:hover { background: var(--brand-subtle); }
 .bi-submenu-item.active { color: var(--primary); font-weight: 600; background: var(--brand-subtle); }
 .bi-submenu-hint { padding: 4px 6px; font-size: 11px; color: var(--muted-fg); }
+
+/* 数据格式：二级菜单里的表单（类型/精度/千分位/计数单位/前后缀/预览）
+   下拉和输入框都是 28px —— 之前下拉 35px、输入框 32px，一行里两个高度对不上，看着就糙 */
+.bi-format-panel { width: 236px; padding: 8px; max-height: none; }
+.bi-format-row { display: flex; align-items: center; gap: 6px; height: 28px; margin-bottom: 6px; }
+.bi-format-row .bi-format-label {
+  /* 56px 才放得下「计数单位」四个字：44px 时会被挤成两行 */
+  flex: 0 0 56px; font-size: 11.5px; color: var(--muted-fg); line-height: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bi-format-row .select-control { flex: 1; min-width: 0; }
+.bi-format-row .input-control { flex: 1; min-width: 0; height: 28px; }
+.bi-format-row .input-control input { height: 28px; padding: 0 8px; font-size: 12px; }
+.bi-format-row .select-trigger {
+  width: 100%; height: 28px; min-height: 0; padding: 0 8px; font-size: 12px;
+}
+.bi-format-check {
+  display: flex; align-items: center; gap: 6px; height: 26px; margin: 0 0 6px;
+  padding-left: 62px; font-size: 11.5px; color: var(--fg);
+}
+.bi-format-preview {
+  margin: 2px 0 8px; padding: 5px 8px; border-radius: 4px; background: var(--muted);
+  font: 600 13px var(--mono); color: var(--fg); text-align: right; font-variant-numeric: tabular-nums;
+}
+.bi-format-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.bi-format-actions .btn { height: 26px; padding: 0 12px; font-size: 12px; }
 
 .bi-menu-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
@@ -250,7 +649,6 @@
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--card); color: var(--fg);
 }
-.bi-check-search:focus { outline: none; border-color: var(--primary); }
 .bi-check-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
 .bi-link { font-size: 11.5px; color: var(--primary); }
 .bi-link:hover { text-decoration: underline; }
@@ -281,15 +679,23 @@
 }
 .bi-custom-move:hover:not(:disabled) { background: var(--brand-subtle); color: var(--primary); }
 .bi-custom-move:disabled { opacity: .3; }
-.bi-pill-menu .input-control { margin-top: 2px; }
+.bi-pill-menu .input-control { height: 28px; }
+.bi-pill-menu .input-control input { height: 28px; padding: 0 8px; font-size: 12px; }
+/* 菜单里的下拉弹层跟着收紧，不然一打开又比菜单本身大一圈 */
+.bi-pill-menu .select-popover, .bi-format-panel .select-popover { padding: 3px; }
+.bi-pill-menu .select-list button, .bi-format-panel .select-list button { padding: 5px 7px; font-size: 12px; }
 
 /* 可视化区：类型切换 */
 .bi-type-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
-.bi-type-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+/* 3 行 3 列固定视窗：类型再多也只在框内滚动，不会把下面的属性区顶走 */
+.bi-type-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  max-height: 168px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px;
+}
 .bi-type-btn {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  height: 54px; border: 1px solid var(--border); border-radius: var(--radius-card);
-  background: var(--card); color: var(--muted-fg); font-size: 11.5px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  height: 46px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--muted-fg); font-size: 11px;
 }
 .bi-type-btn:hover { border-color: var(--primary); color: var(--fg); }
 .bi-type-btn.active { border-color: var(--primary); color: var(--primary); background: var(--brand-subtle); font-weight: 600; }
@@ -299,6 +705,9 @@
   padding: 4px 0; font-size: 12px; color: var(--fg); cursor: pointer;
 }
 .bi-toggle-row + .bi-toggle-row { margin-top: 2px; }
+/* 行里放的是下拉（每页行数）而不是开关：整行不能点，别让用户以为点一下会切换 */
+.bi-toggle-row.bi-toggle-field { cursor: default; }
+.bi-page-size { width: 96px; }
 
 /* --------------------------------------------------- 卡片编辑器（四栏） */
 
@@ -315,6 +724,8 @@
   min-width: 0; overflow: auto; padding: 12px;
   background: var(--card); border-right: 1px solid var(--border);
 }
+/* 数据集栏浅一档：四栏一眼能分出「选字段 / 摆字段 / 看效果 / 调样式」 */
+.bi-ce-dataset { background: var(--background); }
 .bi-ce-col:last-child { border-right: 0; }
 .bi-resizer {
   position: absolute; top: 0; bottom: 0; z-index: 5;
@@ -332,8 +743,8 @@
 .bi-resizer:hover::after, .bi-resizer.is-dragging::after { opacity: .55; }
 .bi-resizer.is-dragging { background: var(--brand-subtle-hover); }
 .bi-ce-title {
-  display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
-  font-size: 13px; font-weight: 700; color: var(--fg);
+  display: flex; align-items: center; gap: 6px; height: 28px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--fg);
 }
 .bi-ce-title::before { content: ''; width: 3px; height: 13px; border-radius: 2px; background: var(--primary); }
 
@@ -370,19 +781,174 @@
 
 /* ------------------------------------------------------- 新建卡片弹窗 */
 
-.bi-picker { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; }
-.bi-picker-right { border-left: 1px solid var(--border); padding-left: 16px; min-height: 300px; }
+/* ------------------------------------------------------ 新建卡片：选数据集 */
+
+/* 卡片标题单独一行，下面是左右分栏的选择器 */
+/* 标签放上面：输入框左边缘才能和下面左栏对齐（并排时会被标签顶右 57px） */
+.bi-newcard-title {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+  margin-bottom: 12px; font-size: 12px; color: var(--muted-fg);
+}
+.bi-newcard-title .input-control { width: 320px; height: 30px; }
+
+.bi-picker {
+  /* 左栏和上面的「卡片标题」等宽（320px），两栏边缘对得上 */
+  display: grid; grid-template-columns: 320px minmax(0, 1fr);
+  height: 400px; border: 1px solid var(--border); border-radius: var(--radius-card);
+  overflow: hidden; background: var(--card);
+}
+
+/* 左栏：搜索 + 类型 + 列表，整体滚动的是列表本身 */
+.bi-picker-left { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+.bi-picker-tools { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border-subtle); }
+.bi-picker-search {
+  flex: 1; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px;
+  border: 1px solid var(--border); border-radius: 6px; color: var(--muted-fg); min-width: 0;
+}
+.bi-picker-search input {
+  flex: 1; min-width: 0; height: 100%; border: 0; background: transparent;
+  color: var(--fg); font-size: 12px; outline: none;
+}
+.bi-picker-type { width: 128px; flex: 0 0 auto; }
+.bi-picker-type .select-trigger { height: 30px; min-height: 0; font-size: 12px; padding: 0 8px; }
+
+.bi-picker-list { flex: 1; overflow-y: auto; padding: 4px; }
+.bi-picker-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 8px;
+  border-radius: 5px; font-size: 12.5px; color: var(--fg); text-align: left;
+}
+.bi-picker-row:hover { background: var(--muted); }
+.bi-picker-row.is-active { background: var(--brand-subtle); }
+.bi-picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 列表里的 LOGO 收到 18px，行高才压得住 */
+.bi-picker-logo { flex: 0 0 auto; }
+.bi-picker-logo .brand-icon, .bi-picker-logo .brand-icon img {
+  width: 18px; height: 18px; flex-basis: 18px;
+}
+.bi-picker-none { margin: 18px 8px; font-size: 12px; color: var(--muted-fg); text-align: center; }
+
+/* 类型徽标：直连库表绿、自定义查询蓝、Excel 绿 */
+.bi-pick-badge {
+  flex: 0 0 auto; padding: 0 6px; border-radius: 4px; font-size: 10.5px; line-height: 17px;
+  background: var(--muted); color: var(--muted-fg); white-space: nowrap;
+}
+.bi-pick-badge.is-table { background: #2f9e63; color: #fff; }
+.bi-pick-badge.is-sql { background: #3f7fd0; color: #fff; }
+.bi-pick-badge.is-excel { background: #217346; color: #fff; }
+.bi-pick-badge.is-extract { background: var(--muted); color: var(--muted-fg); }
+
+/* 右栏：明细 */
+.bi-picker-right { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; overflow-y: auto; min-width: 0; }
 .bi-picker-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-  height: 100%; min-height: 240px; color: var(--muted-fg); font-size: 12px; text-align: center;
+  height: 100%; color: var(--muted-fg); font-size: 12px; text-align: center;
 }
-.bi-picker-right h4 { margin: 0 0 6px; font-size: 14px; word-break: break-all; }
-.bi-picker-tags { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 11px; min-width: 0; }
-.bi-picker-tags .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bi-picker-grid { display: grid; grid-template-columns: 64px 64px minmax(0, 1fr); gap: 8px; margin: 0 0 12px; }
-.bi-picker-grid dt { font-size: 10.5px; color: var(--muted-fg); }
-.bi-picker-grid dd { margin: 2px 0 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
-.bi-picker-grid .wide dd { font-size: 12.5px; }
-.bi-picker-fields-title { font-size: 11px; color: var(--muted-fg); margin-bottom: 6px; }
-.bi-picker-field-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 190px; overflow: auto; }
-.bi-picker-field { padding: 2px 8px; border-radius: 10px; background: var(--muted); color: var(--fg); font-size: 11px; }
+.bi-picker-empty p { margin: 0; max-width: 220px; line-height: 1.6; }
+.bi-pick-head { display: flex; align-items: flex-start; gap: 10px; }
+.bi-pick-logo .brand-icon, .bi-pick-logo .brand-icon img {
+  width: 32px; height: 32px; flex-basis: 32px;
+}
+.bi-pick-title { min-width: 0; }
+.bi-pick-title h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; word-break: break-all; }
+.bi-pick-engine { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-fg); }
+.bi-pick-path { font-size: 11.5px; color: var(--muted-fg); word-break: break-all; }
+.bi-pick-line { display: flex; gap: 10px; font-size: 12px; }
+.bi-pick-line > span { flex: 0 0 98px; color: var(--muted-fg); white-space: nowrap; }
+.bi-pick-line > p { flex: 1; min-width: 0; margin: 0; color: var(--fg); line-height: 1.6; word-break: break-word; }
+.bi-pick-stats { display: flex; gap: 28px; padding: 8px 0; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-subtle); }
+.bi-pick-stats > div { display: flex; flex-direction: column; gap: 2px; }
+.bi-pick-stats span { font-size: 11px; color: var(--muted-fg); }
+.bi-pick-stats strong { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bi-pick-fields { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.bi-pick-fields-title { font-size: 12px; font-weight: 600; color: var(--fg); }
+/* 字段不单独滚：整块右栏滚一层就够，免得出现两个滚动条 */
+.bi-pick-field-list { display: flex; flex-direction: column; gap: 2px; }
+.bi-pick-field {
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 4px;
+  border-radius: 4px; font-size: 12px; color: var(--fg);
+}
+.bi-pick-field:hover { background: var(--muted); }
+.bi-pick-field svg { flex: 0 0 auto; color: var(--brand); }
+.bi-pick-field span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ------------------------------------------------------ 计算字段编辑器 */
+
+/* 弹窗标题后面的说明文字（计算字段编辑器用） */
+.modal-subtitle { margin-left: 10px; font-size: 12px; font-weight: 400; color: var(--muted-fg); }
+
+.cf-dialog { display: flex; flex-direction: column; gap: 14px; }
+.cf-form { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 14px; }
+.cf-form-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cf-label { font-size: 12px; color: var(--fg); }
+.cf-input {
+  width: 100%; height: 32px; padding: 0 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--card); color: var(--fg);
+}
+.cf-panes { display: grid; grid-template-columns: 190px 230px minmax(0, 1fr); gap: 12px; height: min(50vh, 420px); }
+.cf-pane {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card); overflow: hidden;
+}
+.cf-pane-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 10px 6px; font-size: 12px; font-weight: 600; color: var(--fg);
+}
+.cf-pane-icon {
+  display: grid; place-items: center; width: 20px; height: 20px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--muted-fg); cursor: pointer;
+}
+.cf-pane-icon:hover, .cf-pane-icon.is-active { color: var(--primary); background: var(--brand-subtle); }
+.cf-group { width: 100%; }
+.cf-pane-tools { display: flex; align-items: center; gap: 6px; padding: 0 8px 8px; }
+.cf-mini-search {
+  display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+  padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted-fg);
+}
+.cf-wide-search { flex: 1; }
+.cf-mini-search input {
+  flex: 1; min-width: 0; height: auto; padding: 0; border: 0; outline: 0;
+  background: transparent; color: var(--fg); font-size: 11.5px;
+}
+.cf-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
+.cf-fn {
+  display: block; width: 100%; padding: 5px 8px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--fg); font: 12px var(--mono); text-align: left; cursor: pointer;
+}
+.cf-fn:hover { background: var(--brand-subtle); color: var(--primary); }
+.cf-field {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 8px;
+  border: 0; border-radius: 5px; background: transparent; color: var(--fg);
+  font-size: 12px; text-align: left; cursor: pointer;
+}
+.cf-field:hover { background: var(--brand-subtle); }
+.cf-field span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-field-icon {
+  flex: 0 0 18px; display: grid; place-items: center; width: 18px; height: 16px;
+  border-radius: 3px; background: var(--brand-subtle); color: var(--primary);
+}
+.cf-tabs { gap: 14px; justify-content: flex-start; }
+.cf-tabs button {
+  padding: 0 0 6px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--muted-fg); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.cf-tabs button.active { color: var(--fg); border-bottom-color: var(--primary); }
+.cf-empty { padding: 12px 8px; color: var(--muted-fg); font-size: 11.5px; text-align: center; }
+.cf-editor-pane { position: relative; }
+.cf-format {
+  display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent;
+  color: var(--muted-fg); font-size: 11.5px; cursor: pointer;
+}
+.cf-format:hover { color: var(--primary); }
+.cf-editor { flex: 1; display: flex; min-height: 0; border-top: 1px solid var(--border); cursor: text; }
+.cf-gutter {
+  flex: 0 0 34px; margin: 0; padding: 10px 6px; overflow: hidden; text-align: right;
+  color: var(--muted-fg); font: 12px/1.7 var(--mono); background: var(--muted); user-select: none;
+}
+.cf-gutter span { display: block; }
+.cf-code:focus { box-shadow: none; }
+.cf-code {
+  flex: 1; min-width: 0; height: 100%; padding: 10px 12px; border: 0; outline: 0; resize: none;
+  background: var(--card); color: var(--fg); font: 12.5px/1.7 var(--mono); tab-size: 2;
+}
+.cf-remove { margin-right: auto; }

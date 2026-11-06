@@ -30,6 +30,7 @@ const router = createRouter({
     { path: '/prep', redirect: '/prep/datasets' },
     { path: '/prep/datasets', component: () => import('./views/prep/DatasetsView.vue'), meta: { title: '数据集' } },
     { path: '/prep/datasets/new', component: () => import('./views/prep/DatasetWizard.vue'), meta: { title: '新建数据集', requiresAdmin: true } },
+    { path: '/prep/datasets/:id', component: () => import('./views/prep/DatasetDetailView.vue'), meta: { title: '数据集详情' } },
     { path: '/prep/accounts', component: () => import('./views/prep/AccountsView.vue'), meta: { title: '数据账户' } },
 
     // 数据开发：`new` 必须排在 `:id` 之前，否则会被当成 id 解析

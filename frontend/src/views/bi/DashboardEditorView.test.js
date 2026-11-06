@@ -78,7 +78,7 @@ describe('DashboardEditorView', () => {
 
   it('opens the four-column card editor on double click', async () => {
     await mountEditor()
-    await wrapper.find('.bi-card').trigger('dblclick')
+    await wrapper.find('.bi-card-head').trigger('dblclick')
     await flushPromises()
 
     expect(wrapper.find('.bi-card-editor').exists()).toBe(true)
@@ -90,7 +90,7 @@ describe('DashboardEditorView', () => {
 
   it('edits a card and saves the whole board on 完成', async () => {
     await mountEditor()
-    await wrapper.find('.bi-card').trigger('dblclick')
+    await wrapper.find('.bi-card-head').trigger('dblclick')
     await flushPromises()
 
     await wrapper.findAll('.bi-field').find(item => item.text() === 'amount').trigger('click')

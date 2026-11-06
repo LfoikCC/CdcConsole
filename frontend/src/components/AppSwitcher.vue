@@ -16,12 +16,13 @@ const currentApp = computed(() => (route.path.startsWith('/dev') ? 'dev'
   : route.path.startsWith('/bi') ? 'bi'
   : route.path === '/settings' ? 'settings' : 'sync'))
 
-// 系统设置和三个工作区并列，排在最后；只有管理员可见
+// 顺序按使用频率排：先看数（分析）、再做数（开发）、再看管道（同步）、最后管连接；
+// 系统设置只给管理员，永远排在最后
 const apps = [
-  { id: 'sync', label: '实时同步', icon: ArrowRightLeft, to: '/tasks' },
-  { id: 'dev', label: '数据开发', icon: Workflow, to: '/dev/flows' },
-  { id: 'prep', label: '数据准备', icon: DatabaseZap, to: '/prep/datasets' },
   { id: 'bi', label: '数据分析', icon: ChartColumnBig, to: '/bi/dashboards' },
+  { id: 'dev', label: '数据开发', icon: Workflow, to: '/dev/flows' },
+  { id: 'sync', label: '实时同步', icon: ArrowRightLeft, to: '/tasks' },
+  { id: 'prep', label: '数据准备', icon: DatabaseZap, to: '/prep/datasets' },
   { id: 'settings', label: '系统设置', icon: Settings, to: '/settings', admin: true }
 ]
 

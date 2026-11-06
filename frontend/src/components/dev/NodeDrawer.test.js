@@ -156,6 +156,125 @@ describe('NodeDrawer', () => {
     expect(head.text()).toContain('客户（CDC-SOURCE.users）')
   })
 
+  it('renders the database output as write mode, connection, target and pre-SQL', async () => {
+    api.mockResolvedValue([])
+    const wrapper = mount(NodeDrawer, {
+      props: {
+        node: {
+          id: 'o2',
+          type: 'DB_OUTPUT',
+          name: '写 ADS',
+          config: { targetId: 1, table: 'ads_orders', mode: 'APPEND' }
+        },
+        targets: [{ id: 1, name: 'SR_PRD_ODS', targetType: 'STARROCKS_STREAM_LOAD' }],
+        upstreamColumns,
+        busy: false
+      },
+      global: { components }
+    })
+    await flushPromises()
+
+    // 图二的字段顺序：更新方式 → 数据连接 → 高性能模式 → 目标表 → 前置 SQL
+    for (const label of ['更新方式', '直接追加', '全量更新', '插入更新', '数据连接', '高性能模式', '目标表', '前置 SQL']) {
+      expect(wrapper.text()).toContain(label)
+    }
+    expect(wrapper.text()).toContain('StarRocks')
+    expect(wrapper.text()).toContain('新建表')
+    expect(wrapper.text()).toContain('字段映射')
+
+    const toggle = wrapper.find('input[role="switch"]')
+    await toggle.setValue(true)
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+
+    const config = wrapper.emitted('apply')[0][0].config
+    expect(config.mode).toBe('APPEND')
+    expect(config.highPerformance).toBe(true)
+  })
+
+  it('swaps the target table select for a name input when creating a table', async () => {
+    api.mockResolvedValue([])
+    const wrapper = mount(NodeDrawer, {
+      props: {
+        node: { id: 'o3', type: 'DB_OUTPUT', name: '写 ADS', config: { targetId: 1, table: 'ads_orders' } },
+        targets: [{ id: 1, name: 'SR_PRD_ODS', targetType: 'STARROCKS_STREAM_LOAD' }],
+        upstreamColumns,
+        busy: false
+      },
+      global: { components }
+    })
+    await flushPromises()
+
+    // 新建表在标题行，字段映射在选择框右侧
+    expect(wrapper.find('.nd-field-head .nd-field-action').text()).toBe('新建表')
+    expect(wrapper.find('.nd-target-row .btn').text()).toContain('字段映射')
+
+    await wrapper.find('.nd-field-head .nd-field-action').trigger('click')
+    expect(wrapper.find('.nd-target-row .nd-table-input').exists()).toBe(true)
+    expect(wrapper.find('.nd-field-head .nd-field-action').text()).toBe('选择表')
+
+    await wrapper.find('.nd-table-input').setValue('ads_orders_new')
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    expect(wrapper.emitted('apply')[0][0].config.table).toBe('ads_orders_new')
+
+    await wrapper.find('.nd-field-head .nd-field-action').trigger('click')
+    expect(wrapper.find('.nd-table-input').exists()).toBe(false)
+  })
+
+  it('maps target columns by name and by order like the sync task wizard', async () => {
+    api.mockResolvedValue([
+      { table: 'ads_orders', columns: ['order_id', 'customer', 'amount', 'created_at'], primaryKeys: ['order_id'] }
+    ])
+    const wrapper = mount(NodeDrawer, {
+      props: {
+        node: { id: 'o5', type: 'DB_OUTPUT', name: '写 ADS', config: { targetId: 1, table: 'ads_orders' } },
+        targets: [{ id: 1, name: 'SR_PRD_ODS', targetType: 'STARROCKS_STREAM_LOAD' }],
+        upstreamColumns,
+        busy: false
+      },
+      global: { components, stubs: { teleport: true } }
+    })
+    await flushPromises()
+
+    await wrapper.find('.nd-target-row .btn').trigger('click')
+    const action = label => wrapper.findAll('button').find(button => button.text() === label)
+
+    expect(action('同名映射')).toBeTruthy()
+    expect(action('顺序映射')).toBeTruthy()
+
+    // 顺序映射：按目标表字段顺序依次对应
+    await action('顺序映射').trigger('click')
+    await action('应用映射').trigger('click')
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    expect(wrapper.emitted('apply')[0][0].config.targetColumns).toEqual(['order_id', 'customer', 'amount'])
+
+    // 同名映射：回到上游列名
+    await wrapper.find('.nd-target-row .btn').trigger('click')
+    await action('同名映射').trigger('click')
+    await action('应用映射').trigger('click')
+    await wrapper.find('.nd-foot .btn-primary').trigger('click')
+    expect(wrapper.emitted('apply')[1][0].config.targetColumns).toEqual(['id', 'amount', 'status'])
+  })
+
+  it('offers a refresh action instead of blocking when upstream columns are missing', async () => {
+    api.mockResolvedValue([])
+    const wrapper = mount(NodeDrawer, {
+      props: {
+        node: { id: 'o4', type: 'DB_OUTPUT', name: '写 ADS', config: { targetId: 1, table: 'ads_orders' } },
+        targets: [{ id: 1, name: 'SR_PRD_ODS', targetType: 'STARROCKS_STREAM_LOAD' }],
+        upstreamColumns: [],
+        busy: false
+      },
+      global: { components, stubs: { teleport: true } }
+    })
+    await flushPromises()
+
+    await wrapper.find('.nd-target-row .btn').trigger('click')
+    expect(wrapper.text()).toContain('还没拿到上游字段')
+
+    await wrapper.findAll('button').find(button => button.text().includes('刷新上游字段')).trigger('click')
+    expect(wrapper.emitted('need-upstream')).toBeTruthy()
+  })
+
   it('renders the database input as type, account and SQL query', async () => {
     api.mockResolvedValue([])
     const wrapper = mountDrawer({

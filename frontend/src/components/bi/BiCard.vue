@@ -29,9 +29,12 @@ function onHeaderPointerDown(event) {
 </script>
 
 <template>
+  <!-- 双击只挂在标题栏（也就是能拖的那块）：卡片正文里有分页、表格滚动，
+       在正文里连点两下会被当成「打开编辑器」，点「下一页」也会误触 -->
   <div class="bi-card" :class="{ 'is-selected': selected, 'is-dragging': dragging, 'is-editable': editable }" :style="rect"
-       @pointerdown="emit('select')" @dblclick="emit('open')">
-    <div class="bi-card-head" @pointerdown.stop="onHeaderPointerDown">
+       @pointerdown="emit('select')">
+    <div class="bi-card-head" title="拖动调整位置，双击编辑" @pointerdown.stop="onHeaderPointerDown"
+         @dblclick.stop="emit('open')">
       <component :is="icon" :size="13" class="bi-card-icon"/>
       <span class="bi-card-title">{{ title }}</span>
     </div>

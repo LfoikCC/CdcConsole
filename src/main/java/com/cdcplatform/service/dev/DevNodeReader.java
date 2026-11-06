@@ -16,7 +16,9 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -44,8 +46,8 @@ public class DevNodeReader {
     public record ReadResult(String table, long rows, List<ColumnMeta> columns) {
     }
 
-    /** 数据集预览：只读、不落临时表。 */
-    public record PreviewData(List<String> columns, List<List<Object>> rows, boolean truncated) {
+    /** 数据集明细的一页：列名 + 行，行数不超过请求的 limit。 */
+    public record PageData(List<String> columns, List<List<Object>> rows) {
     }
 
     /** 只取字段，不读数据：数据集创建/刷新字段用。 */
@@ -66,19 +68,6 @@ public class DevNodeReader {
                 "SELECT * FROM (" + quoteQualifiedNames(cleaned, source.dbType()) + ") x WHERE 1=0");
     }
 
-    public PreviewData previewTable(SourceConfig source, String database, String table, int limit) {
-        String sql = "SELECT * FROM " + qualified(source.dbType(), effectiveDatabase(source, database), table);
-        return preview(source, database, sql, limit);
-    }
-
-    public PreviewData previewSql(SourceConfig source, String database, String sql, int limit) {
-        String cleaned = stripComments(sql);
-        if (!LEADING_KEYWORD.matcher(cleaned).find() || hasMultipleStatements(cleaned)) {
-            throw new IllegalArgumentException("数据集 SQL 只支持单条 SELECT 或 WITH 查询");
-        }
-        return preview(source, database, quoteQualifiedNames(cleaned, source.dbType()), limit);
-    }
-
     private List<ColumnMeta> describe(SourceConfig source, String database, String sql) {
         try (Connection connection = open(source, database);
              PreparedStatement statement = connection.prepareStatement(sql);
@@ -89,12 +78,133 @@ public class DevNodeReader {
         }
     }
 
-    private PreviewData preview(SourceConfig source, String database, String sql, int limit) {
-        int safe = Math.max(1, Math.min(limit, 500));
+    // ------------------------------------------------------- 数据明细的分页
+
+    /**
+     * 数据源里给字段配的注释：{@code 原始字段名 -> 注释}，没写注释的字段不在结果里。
+     *
+     * <p>只有物理表有注释；SQL 查询出来的列没有可读的注释来源。
+     */
+    public Map<String, String> columnComments(SourceConfig source, String database, String table) {
+        return source.dbType() == DatabaseType.SQLSERVER
+                ? sqlServerComments(source, database, table)
+                : mysqlComments(source, database, table);
+    }
+
+    /** MySQL / StarRocks：{@code SHOW FULL COLUMNS} 直接带 Comment 列，比翻 information_schema 稳。 */
+    private Map<String, String> mysqlComments(SourceConfig source, String database, String table) {
+        String sql = "SHOW FULL COLUMNS FROM "
+                + qualified(source.dbType(), effectiveDatabase(source, database), table);
+        Map<String, String> comments = new LinkedHashMap<>();
+        try (Connection connection = open(source, database);
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rs = statement.executeQuery()) {
+            while (rs.next()) {
+                String name = rs.getString("Field");
+                String comment = rs.getString("Comment");
+                if (name != null && comment != null && !comment.isBlank()) {
+                    comments.put(name, comment.trim());
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("读取字段注释失败：" + e.getMessage(), e);
+        }
+        return comments;
+    }
+
+    /** SQL Server 的注释存在扩展属性 MS_Description 上。 */
+    private Map<String, String> sqlServerComments(SourceConfig source, String database, String table) {
+        String schema = "dbo";
+        String name = table == null ? "" : table.trim();
+        int dot = name.indexOf('.');
+        if (dot > 0) {
+            schema = name.substring(0, dot);
+            name = name.substring(dot + 1);
+        }
+        String sql = """
+                SELECT c.name AS COLUMN_NAME, CAST(ep.value AS NVARCHAR(4000)) AS COLUMN_COMMENT
+                  FROM sys.columns c
+                  JOIN sys.objects o ON o.object_id = c.object_id
+                  JOIN sys.schemas s ON s.schema_id = o.schema_id
+                  LEFT JOIN sys.extended_properties ep
+                         ON ep.major_id = c.object_id AND ep.minor_id = c.column_id
+                        AND ep.name = 'MS_Description'
+                 WHERE o.name = ? AND s.name = ?""";
+        Map<String, String> comments = new LinkedHashMap<>();
         try (Connection connection = open(source, database);
              PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setMaxRows(safe + 1);
-            statement.setFetchSize(Math.min(1000, safe + 1));
+            statement.setString(1, name);
+            statement.setString(2, schema);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    String column = rs.getString("COLUMN_NAME");
+                    String comment = rs.getString("COLUMN_COMMENT");
+                    if (column != null && comment != null && !comment.isBlank()) {
+                        comments.put(column, comment.trim());
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("读取字段注释失败：" + e.getMessage(), e);
+        }
+        return comments;
+    }
+
+
+    /** 数据集明细一共多少行（直连数据集没有本地行数，只能问数据源）。 */
+    public long countTable(SourceConfig source, String database, String table) {
+        return count(source, database,
+                "SELECT COUNT(*) FROM " + qualified(source.dbType(), effectiveDatabase(source, database), table));
+    }
+
+    public long countSql(SourceConfig source, String database, String sql) {
+        return count(source, database, "SELECT COUNT(*) FROM (" + selectOnly(sql, source) + ") src");
+    }
+
+    /**
+     * 取第 {@code offset} 行起的一页。
+     *
+     * <p>这里不用 {@code setMaxRows(offset+limit)} 再跳过前 offset 行：翻到后面几页时
+     * 每翻一页都要把整张表重新读一遍，几千页下来等于把库拖死。
+     */
+    public PageData pageTable(SourceConfig source, String database, String table, int offset, int limit) {
+        String sql = "SELECT * FROM " + qualified(source.dbType(), effectiveDatabase(source, database), table);
+        return page(source, database, sql, offset, limit);
+    }
+
+    public PageData pageSql(SourceConfig source, String database, String sql, int offset, int limit) {
+        return page(source, database, "SELECT * FROM (" + selectOnly(sql, source) + ") src", offset, limit);
+    }
+
+    /** 用户 SQL 只允许单条只读查询，包进子查询前统一校验一遍。 */
+    private static String selectOnly(String sql, SourceConfig source) {
+        String cleaned = stripComments(sql);
+        if (!LEADING_KEYWORD.matcher(cleaned).find() || hasMultipleStatements(cleaned)) {
+            throw new IllegalArgumentException("数据集 SQL 只支持单条 SELECT 或 WITH 查询");
+        }
+        return quoteQualifiedNames(cleaned, source.dbType());
+    }
+
+    private long count(SourceConfig source, String database, String sql) {
+        try (Connection connection = open(source, database);
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rs = statement.executeQuery()) {
+            return rs.next() ? rs.getLong(1) : 0;
+        } catch (SQLException e) {
+            throw new IllegalStateException("统计数据集行数失败：" + e.getMessage(), e);
+        }
+    }
+
+    private PageData page(SourceConfig source, String database, String sql, int offset, int limit) {
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        // SQL Server 的 OFFSET/FETCH 必须带 ORDER BY；不指定排序时用 (SELECT NULL) 占位
+        String paged = source.dbType() == DatabaseType.SQLSERVER
+                ? sql + " ORDER BY (SELECT NULL) OFFSET " + safeOffset + " ROWS FETCH NEXT " + safeLimit + " ROWS ONLY"
+                : sql + " LIMIT " + safeLimit + " OFFSET " + safeOffset;
+        try (Connection connection = open(source, database);
+             PreparedStatement statement = connection.prepareStatement(paged)) {
+            statement.setFetchSize(safeLimit);
             try (ResultSet rs = statement.executeQuery()) {
                 ResultSetMetaData meta = rs.getMetaData();
                 List<String> columns = new ArrayList<>();
@@ -102,22 +212,17 @@ public class DevNodeReader {
                     columns.add(meta.getColumnLabel(i));
                 }
                 List<List<Object>> rows = new ArrayList<>();
-                boolean truncated = false;
                 while (rs.next()) {
-                    if (rows.size() >= safe) {
-                        truncated = true;
-                        break;
-                    }
                     List<Object> row = new ArrayList<>(columns.size());
                     for (int i = 1; i <= columns.size(); i++) {
                         row.add(rs.getObject(i));
                     }
                     rows.add(row);
                 }
-                return new PreviewData(columns, rows, truncated);
+                return new PageData(columns, rows);
             }
         } catch (SQLException e) {
-            throw new IllegalStateException("预览数据集失败：" + e.getMessage(), e);
+            throw new IllegalStateException("读取数据集明细失败：" + e.getMessage(), e);
         }
     }
 

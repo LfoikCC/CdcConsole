@@ -40,7 +40,7 @@ function onDrop(event) {
     <input id="excel-file" type="file" accept=".xlsx,.xls" hidden @change="onPick"/>
     <label for="excel-file" class="eu-body">
       <span class="eu-icon"><FileSpreadsheet v-if="fileName" :size="26"/><UploadCloud v-else :size="26"/></span>
-      <strong>{{ fileName || '点击或拖拽 Excel 到此处' }}</strong>
+      <strong>{{ fileName || '点击或拖拽文件到此处' }}</strong>
       <small>{{ fileName ? '重新选择会替换当前文件' : `支持 .xlsx / .xls，最大 ${maxMb}MB` }}</small>
     </label>
   </div>

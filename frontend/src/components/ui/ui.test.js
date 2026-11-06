@@ -56,6 +56,16 @@ describe('native CDC controls', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
     wrapper.unmount()
   })
+  it('ignores clicks on the overlay and only closes from the close button', async () => {
+    const wrapper = mount(CdcModal, { props: { modelValue: true, title: 'Confirm' }, global: { stubs: { teleport: true } } })
+    await wrapper.find('.overlay').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(wrapper.emitted('close')).toBeUndefined()
+
+    await wrapper.find('.close-x').trigger('click')
+    expect(wrapper.emitted('update:modelValue')[0]).toEqual([false])
+    wrapper.unmount()
+  })
   it('prevents duplicate submissions while a button is loading', () => {
     const wrapper = mount(CdcButton, { props: { loading: true } })
     expect(wrapper.find('button').element.disabled).toBe(true)

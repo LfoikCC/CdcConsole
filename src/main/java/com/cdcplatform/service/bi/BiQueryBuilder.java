@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 把「图表配置」翻译成一条聚合 SQL。
@@ -27,8 +29,17 @@ import java.util.Set;
 @Service
 public class BiQueryBuilder {
 
-    /** 一个可查询的列：{@code label} 给用户看，{@code physical} 拼进 SQL。 */
-    public record Column(String label, String physical) {
+    /**
+     * 一个可查询的列：{@code label} 给用户看，{@code physical} 拼进 SQL。
+     *
+     * <p>{@code computed} 为真时 {@code physical} 是一段已经翻译好的表达式（不是列名），
+     * 拼 SQL 时原样加括号，不能再当标识符去引用。
+     */
+    public record Column(String label, String physical, boolean computed) {
+
+        public Column(String label, String physical) {
+            this(label, physical, false);
+        }
     }
 
     /** kind = TABLE | SQL | STORAGE；STORAGE 时 dialect 为 null（走 H2 双引号）。 */
@@ -63,6 +74,20 @@ public class BiQueryBuilder {
     public record Metric(String column, String agg, String alias) {
     }
 
+    /**
+     * 卡片上自定义的计算字段。
+     *
+     * <p>表达式里用 {@code {字段名}} 引用数据集字段，保存时不用关心底层物理列名
+     * （Excel / 离线数据集的物理列是 C1..Cn）。{@code type} 取 NUMBER / TEXT / DATE，
+     * 只影响它出现在「维度」还是「数值」里。
+     */
+    public record Computed(String name, String type, String expr) {
+
+        public boolean numeric() {
+            return "NUMBER".equalsIgnoreCase(type == null ? "" : type.trim());
+        }
+    }
+
     public record Filter(String column, String op, Object value) {
     }
 
@@ -75,10 +100,16 @@ public class BiQueryBuilder {
     }
 
     public record CardConfig(List<Dimension> dimensions, List<Metric> metrics, List<Filter> filters,
-                             Sort sort, Integer limit) {
+                             Sort sort, Integer limit, List<Computed> computed) {
 
         public static CardConfig of(List<Dimension> dimensions, List<Metric> metrics) {
-            return new CardConfig(dimensions, metrics, List.of(), null, null);
+            return new CardConfig(dimensions, metrics, List.of(), null, null, List.of());
+        }
+
+        /** 没有计算字段时的老写法，省得每个调用点都补一个空列表。 */
+        public CardConfig(List<Dimension> dimensions, List<Metric> metrics, List<Filter> filters,
+                          Sort sort, Integer limit) {
+            this(dimensions, metrics, filters, sort, limit, List.of());
         }
 
         /** 从卡片 JSON 解析。缺字段一律当空，不抛异常——半成品配置也要能预览。 */
@@ -123,12 +154,77 @@ public class BiQueryBuilder {
                     sort = new Sort(by, number(rawSort.get("index")), dir == null ? "desc" : dir, custom);
                 }
             }
-            return new CardConfig(dimensions, metrics, filters, sort, number(config.get("limit")));
+            List<Computed> computed = new ArrayList<>();
+            for (Map<String, Object> item : maps(config.get("computed"))) {
+                String name = text(item.get("name"));
+                String expr = text(item.get("expr"));
+                if (name != null && expr != null) {
+                    computed.add(new Computed(name.trim(), text(item.get("type")), expr));
+                }
+            }
+            return new CardConfig(dimensions, metrics, filters, sort, number(config.get("limit")), computed);
         }
     }
 
     /** 生成结果：{@code labels} 是展示用列名，顺序与 SELECT 一致。 */
     public record Plan(String sql, List<Object> params, List<String> labels, int limit) {
+    }
+
+    /** 表达式里的字段引用：{@code {字段名}}，保存时不用关心 Excel 数据集的 C1..Cn 物理列名。 */
+    private static final Pattern COMPUTED_REF = Pattern.compile("\\{([^{}]+)}");
+    /** 表达式里已经带聚合函数时，外面不能再包一层 SUM/AVG，否则 SQL 直接报嵌套聚合。 */
+    private static final Pattern AGGREGATE_CALL =
+            Pattern.compile("\\b(SUM|COUNT|AVG|MIN|MAX)\\s*\\(", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 把卡片上的计算字段翻译成「表达式列」挂到数据源上。
+     *
+     * <p>{@code {字段}} 换成该字段的物理列引用（库表走方言引号，Excel / 离线走 H2 双引号），
+     * 之后维度和数值按名字引用它就跟普通字段一样。
+     */
+    public Source withComputed(Source source, List<Computed> computed) {
+        if (source == null || computed == null || computed.isEmpty()) {
+            return source;
+        }
+        List<Column> columns = new ArrayList<>(source.columns());
+        for (Computed item : computed) {
+            String name = item.name() == null ? "" : item.name().trim();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("计算字段名称不能为空");
+            }
+            boolean clash = source.columns().stream()
+                    .anyMatch(column -> column.label().equals(name) || column.physical().equals(name));
+            if (clash) {
+                throw new IllegalArgumentException("计算字段「" + name + "」与数据集已有字段重名");
+            }
+            columns.add(new Column(name, translate(source, item), true));
+        }
+        return new Source(source.kind(), source.dialect(), source.database(), source.table(),
+                source.sql(), List.copyOf(columns));
+    }
+
+    private String translate(Source source, Computed item) {
+        String expr = item.expr() == null ? "" : item.expr().trim();
+        String name = item.name() == null ? "" : item.name().trim();
+        if (expr.isEmpty()) {
+            throw new IllegalArgumentException("计算字段「" + name + "」的表达式为空");
+        }
+        if (expr.contains(";") || expr.contains("--") || expr.contains("/*")) {
+            throw new IllegalArgumentException("计算字段「" + name + "」只能写一个表达式，不能带分号或注释");
+        }
+        Matcher matcher = COMPUTED_REF.matcher(expr);
+        StringBuilder out = new StringBuilder();
+        while (matcher.find()) {
+            String reference = matcher.group(1).trim();
+            Column column = source.columns().stream()
+                    .filter(item2 -> item2.label().equals(reference) || item2.physical().equals(reference))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "计算字段「" + name + "」引用了不存在的字段：" + reference));
+            matcher.appendReplacement(out, Matcher.quoteReplacement(expr(source, column)));
+        }
+        matcher.appendTail(out);
+        return out.toString();
     }
 
     private static final Set<String> OPS = Set.of("=", "<>", "!=", ">", ">=", "<", "<=",
@@ -154,6 +250,7 @@ public class BiQueryBuilder {
         for (int i = 0; i < safe.dimensions().size(); i++) {
             Dimension dimension = safe.dimensions().get(i);
             Column column = requireColumn(source, dimension.column());
+            requireGroupable(column);
             String alias = "c" + i;
             String expression = expr(source, column);
             select.add(expression + " AS " + alias);
@@ -168,6 +265,10 @@ public class BiQueryBuilder {
             String inner = metric.column() == null || metric.column().isBlank()
                     ? null
                     : expr(source, requireColumn(source, metric.column()));
+            if (inner != null && !NO_AGG.equals(function)) {
+                Column target = requireColumn(source, metric.column());
+                requireAggregatable(target, function);
+            }
             if (NO_AGG.equals(function)) {
                 // 无处理：原样取这一列，不做聚合
                 if (inner == null) {
@@ -394,6 +495,10 @@ public class BiQueryBuilder {
     }
 
     private static String expr(Source source, Column column) {
+        if (column.computed()) {
+            // 计算字段的 physical 是表达式，不能再加引号，否则会被当成列名
+            return "(" + column.physical() + ")";
+        }
         return source.isStorage()
                 ? SqlIdentifiers.h2Quote(column.physical())
                 : SqlIdentifiers.quote(source.dialect(), column.physical());
@@ -407,6 +512,22 @@ public class BiQueryBuilder {
                 .filter(item -> item.label().equals(name) || item.physical().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("数据集里没有字段：" + name));
+    }
+
+    /** 含聚合函数的计算字段不能当分组键——GROUP BY SUM(x) 这种 SQL 没人能跑。 */
+    private static void requireGroupable(Column column) {
+        if (column.computed() && AGGREGATE_CALL.matcher(column.physical()).find()) {
+            throw new IllegalArgumentException(
+                    "计算字段「" + column.label() + "」含聚合函数，只能放进数值，不能当维度");
+        }
+    }
+
+    /** 已经是聚合表达式的计算字段，外面不能再套一层聚合。 */
+    private static void requireAggregatable(Column column, String function) {
+        if (column.computed() && AGGREGATE_CALL.matcher(column.physical()).find()) {
+            throw new IllegalArgumentException(
+                    "计算字段「" + column.label() + "」已经带聚合函数，" + function + " 会变成嵌套聚合，汇总方式请选「无处理」");
+        }
     }
 
     private static boolean isSqlServer(Source source) {

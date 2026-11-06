@@ -38,9 +38,10 @@ export const CdcModal = defineComponent({
       if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.value)) { event.preventDefault(); last.focus() }
       else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel.value)) { event.preventDefault(); first.focus() }
     }
-    return () => props.modelValue ? h(Teleport, { to: 'body' }, h('div', { class: 'overlay show', style: props.top ? { alignItems: 'flex-start' } : undefined, onClick: e => e.target === e.currentTarget && close() },
+    // 点遮罩不再关闭：填到一半误点空白处就丢掉输入，代价太大；只有关闭按钮 / Esc 才关
+    return () => props.modelValue ? h(Teleport, { to: 'body' }, h('div', { class: 'overlay show', style: props.top ? { alignItems: 'flex-start' } : undefined },
       h('section', { ...attrs, ref: panel, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: -1, class: ['modal', attrs.class], style: { width: props.width || '520px', marginTop: props.top || undefined }, onKeydown: keydown }, [
-        h('header', { class: 'modal-head' }, [h('h2', { id: titleId, class: 'modal-title' }, props.title), h('button', { class: 'close-x', type: 'button', onClick: close, 'aria-label': '关闭' }, h(X, { size: 16 }))]),
+        h('header', { class: 'modal-head' }, [h('h2', { id: titleId, class: 'modal-title' }, [props.title, slots.subtitle && h('small', { class: 'modal-subtitle' }, slots.subtitle())]), h('button', { class: 'close-x', type: 'button', onClick: close, 'aria-label': '关闭' }, h(X, { size: 16 }))]),
         h('div', { class: 'modal-body' }, slots.default?.()), slots.footer && h('footer', { class: 'modal-foot' }, slots.footer())
       ]))) : null
   }
@@ -55,8 +56,8 @@ export const CdcInput = defineComponent({
     props.showPassword && h('button', { type: 'button', class: 'password-toggle', 'aria-label': visible.value ? '隐藏密码' : '显示密码', onClick: () => visible.value = !visible.value }, visible.value ? '隐藏' : '显示')])
   }
 })
-export const CdcInputNumber = defineComponent({ props: { ...modelProps, min: Number, max: Number }, emits: updateEvents,
-  setup: (props, { emit }) => () => h('input', { type: 'number', value: props.modelValue, min: props.min, max: props.max, disabled: props.disabled,
+export const CdcInputNumber = defineComponent({ inheritAttrs: false, props: { ...modelProps, min: Number, max: Number }, emits: updateEvents,
+  setup: (props, { emit, attrs }) => () => h('input', { ...attrs, type: 'number', value: props.modelValue, min: props.min, max: props.max, disabled: props.disabled,
     onInput: e => emit('update:modelValue', e.target.value === '' ? null : Number(e.target.value)), onChange: e => control(emit, e.target.value === '' ? null : Number(e.target.value)) }) })
 export const CdcOption = defineComponent({ props: { label: String, value: null, disabled: Boolean, brand: String }, setup: () => () => null })
 export const CdcSelect = defineComponent({

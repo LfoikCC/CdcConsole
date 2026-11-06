@@ -23,7 +23,13 @@ import java.util.Map;
 @RequestMapping("/api/bi")
 public class BiDashboardController {
 
-    public record CreateInput(String name, String description) {
+    public record CreateInput(String name, String description, Long folderId) {
+    }
+
+    public record FolderInput(String name, Long parentId) {
+    }
+
+    public record MoveInput(Long folderId) {
     }
 
     public record RenameInput(String name, String description) {
@@ -45,6 +51,9 @@ public class BiDashboardController {
     public record QueryInput(Long datasetId, Map<String, Object> config) {
     }
 
+    public record FiltersInput(List<Map<String, Object>> filters) {
+    }
+
     private final BiDashboardService dashboards;
 
     public BiDashboardController(BiDashboardService dashboards) {
@@ -54,17 +63,37 @@ public class BiDashboardController {
     @GetMapping("/dashboards")
     Object list(@RequestParam(defaultValue = "") String q,
                 @RequestParam(required = false) String status,
+                @RequestParam(required = false) String folder,
                 @RequestParam(defaultValue = "0") int page,
                 @RequestParam(defaultValue = "50") int size,
                 Authentication authentication) {
-        List<Map<String, Object>> rows = dashboards.list(q, status, isAdmin(authentication)).stream()
+        List<Map<String, Object>> rows = dashboards.list(q, status, isAdmin(authentication), folder).stream()
                 .map(this::view).toList();
         return PageResult.of(rows, page, size);
     }
 
+    /** 首页三块：最近发布、我最近看的、草稿。 */
+    @GetMapping("/dashboards/overview")
+    Object overview(Authentication authentication) {
+        String user = username(authentication);
+        var body = dashboards.overview(isAdmin(authentication), user);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("published", body.published().stream().map(this::view).toList());
+        result.put("viewed", body.viewed().stream().map(this::view).toList());
+        result.put("drafts", body.drafts().stream().map(this::view).toList());
+        return result;
+    }
+
+    /**
+     * @param track 只读页传 true：打开一次就记进「最近查看」。
+     *              编辑器取详情不传，否则改一次样式也算浏览
+     */
     @GetMapping("/dashboards/{id}")
-    Object detail(@PathVariable long id, Authentication authentication) {
+    Object detail(@PathVariable long id, @RequestParam(defaultValue = "false") boolean track,
+                  Authentication authentication) {
         var detail = dashboards.detail(id, isAdmin(authentication));
+        // 先过可见性再记：否则只读用户能把看不见的草稿 id 塞进自己的最近查看
+        if (track) dashboards.recordView(id, username(authentication));
         Map<String, Object> body = new LinkedHashMap<>(view(detail.dashboard()));
         body.put("cards", detail.cards());
         return body;
@@ -73,8 +102,40 @@ public class BiDashboardController {
     @PostMapping("/dashboards")
     @ResponseStatus(HttpStatus.CREATED)
     Object create(@RequestBody CreateInput input, Authentication authentication) {
-        String actor = authentication == null ? null : authentication.getName();
-        return Map.of("id", dashboards.create(input.name(), input.description(), actor));
+        String actor = username(authentication);
+        return Map.of("id", dashboards.create(input.name(), input.description(), actor, input.folderId()));
+    }
+
+    // ------------------------------------------------------------- folders
+
+    @GetMapping("/dashboard-folders")
+    Object folders() {
+        return dashboards.folders();
+    }
+
+    @PostMapping("/dashboard-folders")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object createFolder(@RequestBody FolderInput input) {
+        return Map.of("id", dashboards.createFolder(input.name(), input.parentId()));
+    }
+
+    @PutMapping("/dashboard-folders/{id}")
+    void renameFolder(@PathVariable long id, @RequestBody FolderInput input) {
+        dashboards.renameFolder(id, input.name());
+    }
+
+    /** 删除文件夹不删看板：子文件夹与其中的看板都上移到父级。 */
+    @DeleteMapping("/dashboard-folders/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deleteFolder(@PathVariable long id) {
+        dashboards.deleteFolder(id);
+    }
+
+    /** 把看板移动到指定文件夹；folderId 传 null 表示移回根目录。 */
+    @PatchMapping("/dashboards/{id}/folder")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void move(@PathVariable long id, @RequestBody MoveInput input) {
+        dashboards.move(id, input.folderId());
     }
 
     @PutMapping("/dashboards/{id}")
@@ -107,9 +168,27 @@ public class BiDashboardController {
         return Map.of("version", result.version(), "cards", result.cards());
     }
 
+    /** 看板级筛选器单独保存：不动卡片的版本号。 */
+    @PutMapping("/dashboards/{id}/filters")
+    void saveFilters(@PathVariable long id, @RequestBody FiltersInput input) {
+        dashboards.saveFilters(id, input.filters());
+    }
+
     @GetMapping("/dashboards/{id}/data")
     Object data(@PathVariable long id, Authentication authentication) {
         return dashboards.data(id, isAdmin(authentication));
+    }
+
+    /**
+     * 查看页改筛选器的值后重新取数。
+     *
+     * <p>值只对这一次查询生效，不写回看板定义——那是作者的东西，
+     * 而且改定义要走 /dashboards/{id}/filters，权限和乐观锁都不一样。
+     */
+    @PostMapping("/dashboards/{id}/data")
+    Object dataWithFilters(@PathVariable long id, @RequestBody(required = false) FiltersInput input,
+                           Authentication authentication) {
+        return dashboards.data(id, isAdmin(authentication), input == null ? null : input.filters());
     }
 
     /** 数据集行数：库表数据集的元数据里没有，编辑器打开时现算一次。 */
@@ -151,11 +230,29 @@ public class BiDashboardController {
         row.put("status", dashboard.status());
         row.put("version", dashboard.version());
         row.put("cardCount", dashboard.cardCount());
+        row.put("folderId", dashboard.folderId());
         row.put("createdBy", dashboard.createdBy());
         row.put("createdAt", dashboard.createdAt());
         row.put("updatedAt", dashboard.updatedAt());
         row.put("publishedAt", dashboard.publishedAt());
+        row.put("filters", dashboard.filters() == null ? List.of() : dashboard.filters());
         return row;
+    }
+
+    /**
+     * 取当前用户名。
+     *
+     * <p>不能直接用 {@code authentication.getName()}：这里的 principal 是 User 记录，
+     * 而 record 没实现 Principal，Spring 会退回 {@code principal.toString()}，
+     * 拿到的是「User[id=1, username=admin, ...]」一整串（created_by 里已经有一批这样的脏数据）。
+     */
+    private static String username(Authentication authentication) {
+        if (authentication == null) return null;
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof com.cdcplatform.service.ConsoleIdentityService.User user) {
+            return user.username();
+        }
+        return authentication.getName();
     }
 
     private static boolean isAdmin(Authentication authentication) {

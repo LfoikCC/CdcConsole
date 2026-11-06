@@ -11,14 +11,13 @@ const datasets = ref([])
 const loading = ref(false)
 const q = ref('')
 const type = ref('')
-const preview = reactive({ open: false, loading: false, title: '', columns: [], rows: [], truncated: false, elapsedMs: 0 })
 const edit = reactive({
   open: false, loading: false, saving: false, id: null, name: '', description: '',
   type: '', tableName: '', sqlText: '', originalTable: '', originalSql: ''
 })
 const isAdmin = computed(() => can('admin'))
 
-const TYPE_LABELS = { TABLE: '数据库', SQL: '数据库', EXCEL: 'Excel', EXTRACT: '离线' }
+const TYPE_LABELS = { TABLE: '数据库', SQL: '数据库', EXCEL: '本地文件', EXTRACT: '离线' }
 const TYPE_ICONS = { TABLE: Table2, SQL: Code2, EXCEL: FileSpreadsheet, EXTRACT: Archive }
 const TYPE_TONES = { TABLE: 'running', SQL: 'warning', EXCEL: '', EXTRACT: 'running' }
 
@@ -63,26 +62,7 @@ function source(item) {
   if (item.datasetType === 'TABLE') return `${item.databaseName || ''}.${item.tableName || ''}`.replace(/^\./, '')
   if (item.datasetType === 'SQL') return '自定义查询'
   if (item.datasetType === 'EXTRACT') return '平台存储'
-  return 'Excel 文件'
-}
-
-async function openPreview(item) {
-  preview.open = true
-  preview.loading = true
-  preview.title = item.name
-  preview.columns = []
-  preview.rows = []
-  try {
-    const data = await api(`/datasets/${item.id}/preview?limit=200`)
-    preview.columns = data.columns || []
-    preview.rows = data.rows || []
-    preview.truncated = data.truncated
-    preview.elapsedMs = data.elapsedMs
-  } catch (e) {
-    CdcMessage.error(e.message)
-  } finally {
-    preview.loading = false
-  }
+  return '本地文件'
 }
 
 async function openEdit(item) {
@@ -169,7 +149,7 @@ onMounted(load)
   <header class="page-header">
     <div>
       <h1>数据集</h1>
-      <p>数据流与后续分析的输入输出。支持直连库表、自定义 SQL、Excel 文件与离线数据集。</p>
+      <p>数据流与后续分析的输入输出。支持直连库表、自定义 SQL、本地文件与离线数据集。</p>
     </div>
     <div class="header-actions">
       <button v-if="isAdmin" class="console-btn primary" @click="router.push('/prep/datasets/new')">
@@ -187,7 +167,7 @@ onMounted(load)
         <span>数据库</span><strong>{{ counts.DB }}</strong>
       </button>
       <button class="summary-item task-filter" :class="{ active: type === 'EXCEL' }" :aria-pressed="type === 'EXCEL'" @click="selectType('EXCEL')">
-        <span>Excel 文件</span><strong>{{ counts.EXCEL }}</strong>
+        <span>本地文件</span><strong>{{ counts.EXCEL }}</strong>
       </button>
       <button class="summary-item task-filter" :class="{ active: type === 'EXTRACT' }" :aria-pressed="type === 'EXTRACT'" @click="selectType('EXTRACT')">
         <span>离线数据集</span><strong>{{ counts.EXTRACT }}</strong>
@@ -213,7 +193,7 @@ onMounted(load)
         <tbody>
           <tr v-for="item in filtered" :key="item.id">
             <td>
-              <a class="task-link" @click="openPreview(item)">{{ item.name }}</a>
+              <a class="task-link" @click="router.push(`/prep/datasets/${item.id}`)">{{ item.name }}</a>
               <div class="task-desc muted">{{ item.description || '暂无描述' }}</div>
             </td>
             <td>
@@ -227,9 +207,8 @@ onMounted(load)
             <td class="mono dim">{{ String(item.updatedAt || '').replace('T', ' ').slice(0, 19) }}</td>
             <td>
               <div class="row-actions">
-                <button class="btn btn-ghost btn-sm" @click="openPreview(item)">预览</button>
+                <button class="btn btn-ghost btn-sm" @click="router.push(`/prep/datasets/${item.id}`)">详情</button>
                 <cdc-menu>
-                  <button @click="openPreview(item)">查看数据</button>
                   <button v-if="isAdmin" @click="openEdit(item)">编辑</button>
                   <button v-if="isAdmin && !['EXCEL', 'EXTRACT'].includes(item.datasetType)" @click="refresh(item)">刷新字段</button>
                   <button v-if="isAdmin" class="danger" @click="remove(item)">删除</button>
@@ -247,25 +226,6 @@ onMounted(load)
     </div>
     <div class="table-footer"><span class="muted">共 {{ filtered.length }} 个数据集</span></div>
   </section>
-
-  <cdc-modal v-model="preview.open" :title="'预览 · ' + preview.title" width="min(1000px,96vw)">
-    <div v-if="preview.loading" class="loading-line">正在读取数据…</div>
-    <div v-else class="table-wrap preview-table">
-      <table>
-        <thead><tr><th v-for="column in preview.columns" :key="column">{{ column }}</th></tr></thead>
-        <tbody>
-          <tr v-for="(row, index) in preview.rows" :key="index">
-            <td v-for="(value, cell) in row" :key="cell" class="mono">{{ value == null ? 'NULL' : value }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="!preview.rows.length" class="empty-state"><p>没有数据</p></div>
-    </div>
-    <template #footer>
-      <span class="muted preview-meta">共 {{ preview.rows.length }} 行{{ preview.truncated ? '（已截断）' : '' }} · {{ preview.elapsedMs }} ms</span>
-      <cdc-button @click="preview.open = false">关闭</cdc-button>
-    </template>
-  </cdc-modal>
 
   <cdc-modal v-model="edit.open" title="编辑数据集" width="min(560px,94vw)">
     <div v-if="edit.loading" class="loading-line">正在读取数据集…</div>
@@ -299,6 +259,4 @@ onMounted(load)
   width: 100%; font: 12px var(--mono); padding: 10px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--card); color: var(--fg); resize: vertical;
 }
-.preview-table { max-height: 60vh; overflow: auto; }
-.preview-meta { margin-right: auto; }
 </style>

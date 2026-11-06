@@ -70,14 +70,15 @@ body { font-size:14px; line-height:1.5; background:var(--bg); color:var(--fg); }
 
 /* ---------- inputs ---------- */
 input,select,textarea { border-radius:var(--radius-control); border-color:var(--border); background:var(--card); height:var(--control-height); padding:6px 10px; font-size:14px; }
-input:focus,select:focus,textarea:focus { border-color:var(--primary); box-shadow:0 0 0 2px color-mix(in srgb,var(--primary),transparent 80%); }
+/* 聚焦不换边框：光标本身的闪烁已经能说明在输入状态，边框跟着变会一直跳 */
+input:focus,select:focus,textarea:focus { border-color:var(--border); box-shadow:none; }
 .select-trigger { border-radius:var(--radius-control); border-color:var(--border); background:var(--card); font-size:14px; }
-.select-trigger:focus-visible { border-color:var(--primary); box-shadow:0 0 0 2px color-mix(in srgb,var(--primary),transparent 80%); }
+.select-trigger:focus-visible { border-color:var(--border); box-shadow:none; }
 .select-popover,.menu { border-radius:var(--radius-card); border-color:var(--border); box-shadow:var(--shadow-popover); padding:6px; }
 .select-list button,.menu button { border-radius:var(--radius-control); font-size:14px; }
 .select-list button:hover,.select-list button.selected,.menu button:hover { background:var(--brand-subtle); }
 .search-box input { background:var(--muted); border-color:transparent; }
-.search-box input:focus { background:var(--card); border-color:var(--primary); }
+.search-box input:focus { background:var(--card); border-color:var(--border); }
 .form-help,.hint { font-size:12px; }
 .field-label { font-size:13px; font-weight:500; }
 

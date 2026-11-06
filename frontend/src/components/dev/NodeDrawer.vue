@@ -1,12 +1,11 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Pencil } from 'lucide-vue-next'
-import { ChevronDown } from 'lucide-vue-next'
+import { Info, Pencil } from 'lucide-vue-next'
 import { api } from '../../api'
 import { CdcMessage } from '../ui/feedback'
 import SqlEditorDialog from './SqlEditorDialog.vue'
 import {
-  AGG_FUNCTIONS, CAST_TYPES, COMPARATORS, MODE_OPTIONS, OPERATOR_LABELS,
+  AGG_FUNCTIONS, CAST_TYPES, COMPARATORS, OPERATOR_LABELS,
   iconOf, metaOf,
 } from './nodeTypes'
 
@@ -32,7 +31,6 @@ const clone = value => JSON.parse(JSON.stringify(value ?? {}))
 const draft = ref(clone(props.node.config || {}))
 const nodeName = ref(props.node.name || meta.value.label)
 const targetTables = ref([])
-const tableMenuOpen = ref(false)
 const localDatasets = ref([])
 const creatingDataset = ref(false)
 const newDatasetName = ref('')
@@ -53,6 +51,22 @@ const sqlDialogOpen = ref(false)
 const editingName = ref(false)
 const nameDraft = ref('')
 const nameInput = ref(null)
+const targetDbType = ref('')
+const newTableOpen = ref(false)
+const newTableName = ref('')
+const newTableInput = ref(null)
+const mappingOpen = ref(false)
+const mappingRows = ref([])
+const preSqlOpen = ref(false)
+const preSqlDraft = ref('')
+
+/** 数据库输出的三种写法，顺序按「由轻到重」排：追加、全量、按主键更新。 */
+const WRITE_MODES = [
+  { value: 'APPEND', label: '直接追加', hint: '不清目标表，把本次结果直接插进去；重复运行会产生重复行' },
+  { value: 'OVERWRITE', label: '全量更新', hint: '先清空目标表，再写入本次结果' },
+  { value: 'UPSERT', label: '插入更新', hint: '按主键判断：已存在的行更新，不存在的行插入' }
+]
+const TARGET_DB_LABELS = { MYSQL: 'MySQL', SQLSERVER: 'SQL Server', STARROCKS_STREAM_LOAD: 'StarRocks' }
 const headerTitle = computed(() => nodeName.value || (draft.value.operator
   ? (OPERATOR_LABELS[draft.value.operator] || meta.value.label)
   : meta.value.label))
@@ -80,6 +94,18 @@ const dbTypes = computed(() => [...new Set(props.sources.map(item => item.dbType
 const filteredSources = computed(() => props.sources.filter(item => !dbType.value || item.dbType === dbType.value))
 const sqlLines = computed(() => (draft.value.sql || '').split('\n'))
 
+// 数据库输出：Kafka 目标写不了关系表，直接不出现在「数据连接」里
+const dbTargets = computed(() => props.targets.filter(item => item.targetType !== 'KAFKA'))
+const targetDbTypes = computed(() => [...new Set(dbTargets.value.map(item => item.targetType).filter(Boolean))])
+const filteredTargets = computed(() => dbTargets.value.filter(item => !targetDbType.value || item.targetType === targetDbType.value))
+// 目标表下拉：已有表 + 当前手填的表名（否则选中后下拉里显示空白）
+const tableOptions = computed(() => {
+  const names = targetTables.value.map(item => item.table)
+  if (draft.value.table && !names.includes(draft.value.table)) names.unshift(draft.value.table)
+  return names
+})
+const preSqlLines = computed(() => (draft.value.preSql || '').split('\n'))
+
 function initDbType() {
   const selected = props.sources.find(item => item.id === draft.value.sourceId)
   dbType.value = selected?.dbType || (dbTypes.value.length === 1 ? dbTypes.value[0] : '')
@@ -105,7 +131,14 @@ watch(() => props.node, () => {
     if (draft.value.limit == null) draft.value.limit = 10000
     initDbType()
   }
-  if (props.node.type === 'DB_OUTPUT' && draft.value.targetId) loadTargetTables()
+  if (props.node.type === 'DB_OUTPUT') {
+    if (draft.value.mode == null) draft.value.mode = 'APPEND'
+    if (draft.value.highPerformance == null) draft.value.highPerformance = false
+    newTableOpen.value = false
+    newTableName.value = ''
+    initTargetDbType()
+    if (draft.value.targetId) loadTargetTables()
+  }
   if (props.node.type === 'OPERATOR') emit('need-upstream')
 }, { immediate: true })
 
@@ -130,14 +163,11 @@ async function loadTargetTables() {
 function syncTargetMeta() {
   const found = targetTables.value.find(item => item.table === draft.value.table)
   targetMeta.value = found || null
-  if (found) {
-    if (!draft.value.keyColumns || draft.value.keyColumns.length === 0) {
-      draft.value.keyColumns = [...(found.primaryKeys || [])]
-    }
-    if (!draft.value.targetColumns || draft.value.targetColumns.length === 0) {
-      draft.value.targetColumns = [...(found.columns || [])]
-    }
+  if (found && (!draft.value.keyColumns || draft.value.keyColumns.length === 0)) {
+    draft.value.keyColumns = [...(found.primaryKeys || [])]
   }
+  // 目标列不再按整张表预填：列数一旦多于上游就会直接报「目标列数与上游列数不一致」，
+  // 留空表示按上游列名一一写入，需要改名时用「字段映射」
 }
 
 async function onSourceChange(value) {
@@ -170,9 +200,92 @@ function onTargetTableInput(value) {
   onTargetTableChange(String(value || '').trim())
 }
 
-function pickTargetTable(name) {
-  tableMenuOpen.value = false
-  onTargetTableChange(name)
+function initTargetDbType() {
+  const selected = props.targets.find(item => item.id === draft.value.targetId)
+  targetDbType.value = selected?.targetType || (targetDbTypes.value.length === 1 ? targetDbTypes.value[0] : '')
+}
+
+function onTargetDbTypeChange(value) {
+  targetDbType.value = value
+  const selected = props.targets.find(item => item.id === draft.value.targetId)
+  if (selected && selected.targetType !== value) {
+    draft.value.targetId = null
+    draft.value.table = ''
+    draft.value.keyColumns = []
+    draft.value.targetColumns = []
+    targetTables.value = []
+    targetMeta.value = null
+  }
+}
+
+/** 目标表可以在「选已有表」和「填新表名」之间切换，按钮文案跟着变。 */
+function toggleNewTable() {
+  newTableOpen.value = !newTableOpen.value
+  if (!newTableOpen.value) return
+  newTableName.value = ''
+  nextTick(() => newTableInput.value?.focus())
+}
+
+/** 字段映射：上游列按位置对应到目标列，确认后写回 targetColumns。 */
+function buildMappingRows() {
+  const targets = draft.value.targetColumns || []
+  mappingRows.value = props.upstreamColumns.map((column, index) => ({
+    source: column.label,
+    target: targets[index] || column.label
+  }))
+}
+
+function openMapping() {
+  buildMappingRows()
+  mappingOpen.value = true
+}
+
+// 上游字段是异步取的：弹窗开着时字段才到（刚预览完），补一次行，别让用户对着空列表发呆
+watch(() => props.upstreamColumns, () => {
+  if (mappingOpen.value && !mappingRows.value.length) buildMappingRows()
+})
+
+function confirmMapping() {
+  if (!mappingRows.value.length) {
+    mappingOpen.value = false
+    return
+  }
+  draft.value.targetColumns = mappingRows.value.map(row => (row.target || row.source).trim())
+  mappingOpen.value = false
+}
+
+/** 同名映射：每一行都写上游列名（留空本来就是这个含义，这里把它显式填出来）。 */
+function mapByNameRows() {
+  mappingRows.value = mappingRows.value.map(row => ({ ...row, target: row.source }))
+}
+
+/** 顺序映射：按目标表字段顺序依次对应，和新建同步任务里的行为一致。 */
+function mapByOrderRows() {
+  const columns = targetMeta.value?.columns || []
+  if (!columns.length) {
+    CdcMessage.warning('先选择目标表，才能按目标表字段顺序映射')
+    return
+  }
+  mappingRows.value = mappingRows.value.map((row, index) => ({ ...row, target: columns[index] || '' }))
+}
+
+// 目标列里没有的字段写进去，运行时会报列不存在；先在弹窗里点出来
+const mappingMissing = computed(() => {
+  const columns = targetMeta.value?.columns || []
+  if (!columns.length) return []
+  return mappingRows.value
+    .filter(row => row.target && !columns.includes(row.target))
+    .map(row => row.target)
+})
+
+function openPreSql() {
+  preSqlDraft.value = draft.value.preSql || ''
+  preSqlOpen.value = true
+}
+
+function confirmPreSql() {
+  draft.value.preSql = preSqlDraft.value
+  preSqlOpen.value = false
 }
 
 // ------------------------------------------------------------- operators
@@ -732,48 +845,131 @@ defineExpose({ snapshot })
         </template>
 
         <template v-else-if="node.type === 'DB_OUTPUT'">
-          <cdc-form-item label="目标连接" required>
-            <cdc-select :model-value="draft.targetId" filterable placeholder="选择目标连接"
-                        @update:model-value="onTargetChange">
-              <cdc-option v-for="item in targets" :key="item.id" :label="item.name" :value="item.id"/>
-            </cdc-select>
+          <cdc-form-item label="更新方式">
+            <div class="nd-modes">
+              <label v-for="item in WRITE_MODES" :key="item.value" class="nd-mode"
+                     :class="{ 'is-active': (draft.mode || 'APPEND') === item.value }">
+                <input type="radio" name="nd-write-mode" :value="item.value"
+                       :checked="(draft.mode || 'APPEND') === item.value"
+                       @change="draft.mode = item.value"/>
+                <span>{{ item.label }}</span>
+                <span class="nd-hint" :title="item.hint" :aria-label="item.hint"><Info :size="12"/></span>
+              </label>
+            </div>
           </cdc-form-item>
-          <cdc-form-item label="目标表" required>
-            <div class="nd-combo">
-              <cdc-input :model-value="draft.table" placeholder="输入或选择表名"
-                         @update:model-value="onTargetTableInput"/>
-              <button type="button" class="icon-btn" aria-label="选择已有表" title="选择已有表"
-                      @click="tableMenuOpen = !tableMenuOpen">
-                <ChevronDown :size="14"/>
+
+          <cdc-form-item label="数据连接" required>
+            <div class="nd-two-cols">
+              <cdc-select :model-value="targetDbType" placeholder="数据库类型"
+                          @update:model-value="onTargetDbTypeChange">
+                <cdc-option v-for="type in targetDbTypes" :key="type"
+                            :label="TARGET_DB_LABELS[type] || type" :value="type"/>
+              </cdc-select>
+              <cdc-select :model-value="draft.targetId" filterable placeholder="数据账户"
+                          @update:model-value="onTargetChange">
+                <cdc-option v-for="item in filteredTargets" :key="item.id" :label="item.name" :value="item.id"/>
+              </cdc-select>
+            </div>
+          </cdc-form-item>
+
+          <div class="nd-switch-row">
+            <span class="nd-switch-label">
+              高性能模式
+              <span class="nd-hint" title="调大批次、减少提交次数，适合一次写入几十万行以上"><Info :size="12"/></span>
+            </span>
+            <cdc-switch :model-value="!!draft.highPerformance"
+                        @update:model-value="value => (draft.highPerformance = value)"/>
+          </div>
+
+          <div class="form-field" role="group">
+            <div class="nd-field-head">
+              <span class="field-label">目标表<span class="req"> *</span></span>
+              <button type="button" class="nd-field-action" @click="toggleNewTable">
+                {{ newTableOpen ? '选择表' : '新建表' }}
               </button>
-              <div v-if="tableMenuOpen" class="nd-combo-menu">
-                <button v-for="item in targetTables" :key="item.table" type="button"
-                        @click="pickTargetTable(item.table)">{{ item.table }}</button>
-                <span v-if="!targetTables.length" class="nd-combo-empty">没有可选表</span>
-              </div>
+            </div>
+            <div class="nd-target-row">
+              <input v-if="newTableOpen" ref="newTableInput" v-model="newTableName" class="nd-table-input"
+                     placeholder="输入新表名，运行时自动建表"
+                     @input="onTargetTableInput(newTableName)"
+                     @keydown.enter.prevent="toggleNewTable"/>
+              <cdc-select v-else :model-value="draft.table" filterable placeholder="选择表名"
+                          @update:model-value="onTargetTableInput">
+                <cdc-option v-for="name in tableOptions" :key="name" :label="name" :value="name"/>
+              </cdc-select>
+              <button type="button" class="btn btn-ghost btn-sm" @click="openMapping">字段映射</button>
             </div>
             <div class="form-help">表不存在时按上游结构自动建表</div>
-          </cdc-form-item>
-          <cdc-form-item label="写入模式">
-            <cdc-select :model-value="draft.mode || 'OVERWRITE'"
-                        @update:model-value="value => (draft.mode = value)">
-              <cdc-option v-for="item in MODE_OPTIONS" :key="item.value" :label="item.label" :value="item.value"/>
-            </cdc-select>
-          </cdc-form-item>
-          <cdc-form-item v-if="draft.mode === 'UPSERT'" label="主键列">
+          </div>
+
+          <cdc-form-item v-if="draft.mode === 'UPSERT'" label="主键列" required>
             <cdc-select :model-value="draft.keyColumns" multiple filterable placeholder="选择主键列"
                         @update:model-value="value => (draft.keyColumns = value)">
               <cdc-option v-for="column in (targetMeta?.columns || [])" :key="column"
                           :label="column" :value="column"/>
             </cdc-select>
           </cdc-form-item>
-          <cdc-form-item label="目标列">
-            <cdc-select :model-value="draft.targetColumns" multiple filterable placeholder="与上游列一一对应">
-              <cdc-option v-for="column in (targetMeta?.columns || [])" :key="column"
-                          :label="column" :value="column"/>
-            </cdc-select>
-            <div class="form-help">顺序必须与上游列一致；留空则按上游列名写入</div>
+
+          <cdc-form-item label="前置 SQL">
+            <div class="nd-sql-preview" @click="openPreSql">
+              <div class="nd-sql-gutter">
+                <span v-for="(line, index) in preSqlLines" :key="index">{{ index + 1 }}</span>
+              </div>
+              <pre>{{ draft.preSql || '点击编写前置 SQL' }}</pre>
+              <button type="button" class="nd-sql-edit">编辑</button>
+            </div>
+            <div class="form-help">写入前执行，可写多条、用分号分隔；与本次写入在同一事务里</div>
           </cdc-form-item>
+
+          <cdc-modal v-model="mappingOpen" title="字段映射" width="min(620px,94vw)">
+            <div v-if="!mappingRows.length" class="nd-empty">
+              还没拿到上游字段，先打开上游节点预览一次
+              <button type="button" class="btn btn-ghost btn-sm" @click="emit('need-upstream')">刷新上游字段</button>
+            </div>
+            <template v-else>
+              <div class="nd-map-toolbar">
+                <button type="button" class="btn btn-ghost btn-sm" @click="mapByNameRows">同名映射</button>
+                <button type="button" class="btn btn-ghost btn-sm" @click="mapByOrderRows">顺序映射</button>
+                <span class="form-help">上游 {{ mappingRows.length }} 列，按位置写入目标表</span>
+              </div>
+              <div class="nd-map-head">
+                <span>上游字段</span><span/><span>目标字段</span>
+              </div>
+              <div class="nd-map-list">
+                <div v-for="row in mappingRows" :key="row.source" class="nd-map-row">
+                  <span class="mono">{{ row.source }}</span>
+                  <span class="nd-map-arrow">→</span>
+                  <cdc-select v-if="(targetMeta?.columns || []).length" v-model="row.target" filterable clearable>
+                    <cdc-option v-for="column in targetMeta.columns" :key="column" :label="column" :value="column"/>
+                  </cdc-select>
+                  <cdc-input v-else v-model="row.target" :placeholder="row.source"/>
+                </div>
+              </div>
+              <p v-if="mappingMissing.length" class="nd-error">
+                目标表里没有这些字段：{{ mappingMissing.join('、') }}，运行时会报列不存在
+              </p>
+              <div class="form-help">留空表示沿用上游列名</div>
+            </template>
+            <template #footer>
+              <cdc-button @click="mappingOpen = false">取消</cdc-button>
+              <cdc-button type="primary" :disabled="!mappingRows.length" @click="confirmMapping">应用映射</cdc-button>
+            </template>
+          </cdc-modal>
+
+          <cdc-modal v-model="preSqlOpen" title="前置 SQL" width="min(760px,95vw)">
+            <div class="nd-sql-editor">
+              <div class="nd-sql-gutter">
+                <span v-for="(line, index) in preSqlDraft.split('\n')" :key="index">{{ index + 1 }}</span>
+              </div>
+              <textarea v-model="preSqlDraft" spellcheck="false"
+                        placeholder="DELETE FROM ads.orders WHERE dt = '2026-11-01';"></textarea>
+            </div>
+            <div class="form-help">写入前按顺序执行，分号分隔；DDL 会隐式提交，请谨慎使用</div>
+            <template #footer>
+              <cdc-button @click="preSqlOpen = false">取消</cdc-button>
+              <cdc-button type="primary" @click="confirmPreSql">确定</cdc-button>
+            </template>
+          </cdc-modal>
         </template>
       </cdc-form>
 

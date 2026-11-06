@@ -3,6 +3,7 @@ package com.cdcplatform.service.bi;
 import com.cdcplatform.model.Types.DatabaseType;
 import com.cdcplatform.service.bi.BiQueryBuilder.CardConfig;
 import com.cdcplatform.service.bi.BiQueryBuilder.Column;
+import com.cdcplatform.service.bi.BiQueryBuilder.Computed;
 import com.cdcplatform.service.bi.BiQueryBuilder.Dimension;
 import com.cdcplatform.service.bi.BiQueryBuilder.Filter;
 import com.cdcplatform.service.bi.BiQueryBuilder.Metric;
@@ -312,5 +313,47 @@ class BiQueryBuilderTest {
         assertThat(config.filters()).hasSize(1);
         assertThat(config.sort().index()).isZero();
         assertThat(config.limit()).isEqualTo(100);
+    }
+
+    @Test
+    void translatesComputedFieldsByTheirDisplayName() {
+        // Excel / 离线数据集的物理列是 C1..Cn：占位符要按展示名换成真实物理列
+        var source = builder.withComputed(Source.storage("PUBLIC", "DS_1", STORAGE_COLUMNS),
+                List.of(new Computed("客单价", "NUMBER", "SUM({amount}) / COUNT({region})")));
+        var plan = builder.build(source, CardConfig.of(List.of(),
+                List.of(new Metric("客单价", "NONE", null))), 5000);
+
+        assertThat(plan.sql()).isEqualTo(
+                "SELECT (SUM(\"C2\") / COUNT(\"C1\")) AS m0 FROM \"PUBLIC\".\"DS_1\" LIMIT 201");
+    }
+
+    @Test
+    void rejectsNestedAggregatesAndAggregatedDimensions() {
+        var source = builder.withComputed(mysqlTable(),
+                List.of(new Computed("合计", "NUMBER", "SUM({amount})")));
+
+        assertThatThrownBy(() -> builder.build(source, CardConfig.of(List.of(),
+                List.of(new Metric("合计", "SUM", null))), 5000))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("嵌套聚合");
+
+        assertThatThrownBy(() -> builder.build(source, CardConfig.of(List.of(new Dimension("合计")),
+                List.of()), 5000))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能当维度");
+    }
+
+    @Test
+    void rejectsComputedFieldsWithoutAValidReference() {
+        assertThatThrownBy(() -> builder.withComputed(mysqlTable(),
+                List.of(new Computed("x", "NUMBER", "SUM({nope})"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不存在的字段：nope");
+
+        // 与数据集字段重名会让引用产生歧义
+        assertThatThrownBy(() -> builder.withComputed(mysqlTable(),
+                List.of(new Computed("region", "TEXT", "{status}"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("重名");
     }
 }

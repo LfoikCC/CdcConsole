@@ -120,6 +120,97 @@ export function totalRows(cards) {
   return (cards || []).reduce((max, card) => Math.max(max, card.y + card.h), 0)
 }
 
+/** 卡片自己带坐标（自由摆放）；缺 x/y 的老数据按空位补一个，避免全挤在左上角。 */
+export function withRects(cards) {
+  const placed = []
+  for (const card of cards || []) {
+    if (Number.isFinite(Number(card.x)) && Number.isFinite(Number(card.y))) {
+      placed.push(card)
+      continue
+    }
+    const slot = freeSlot(placed, card.w, card.h)
+    card.x = slot.x
+    card.y = slot.y
+    placed.push(card)
+  }
+  return cards
+}
+
+/**
+ * 把某张卡放到指定位置，被压住的卡整体往下让开。
+ *
+ * <p>拖动时每一帧都从「拖动开始时的布局」重算（见 BiGrid 的 baseline），
+ * 所以把卡拖走之后被推下去的卡会自己回到原位，不会越拖越乱。
+ */
+export function placeCard(cards, index, rect, cols = COLS) {
+  const moving = cards[index]
+  if (!moving) return cards
+  Object.assign(moving, clampRect({ ...moving, ...rect, w: rect.w ?? moving.w, h: rect.h ?? moving.h }))
+  const placed = [moving]
+  const others = cards
+    .filter((_, i) => i !== index)
+    .sort((a, b) => (a.y - b.y) || (a.x - b.x))
+  for (const card of others) {
+    Object.assign(card, clampRect(card))
+    let guard = 0
+    let hit = placed.find(item => overlaps(item, card))
+    while (hit && guard++ < 200) {
+      card.y = hit.y + hit.h
+      hit = placed.find(item => overlaps(item, card))
+    }
+    placed.push(card)
+  }
+  return cards
+}
+
+/**
+ * 纵向压实：卡片上方没有别的卡时，自动往上补。
+ *
+ * <p>和 settle 相反——settle 只负责把重叠的往下推，空出来的行它不管；
+ * 这里按 y 从小到大过一遍，每张卡能升多高升多高，上方空洞自然被填掉。
+ * **只动 y，不动 x / 宽度**：左右怎么摆是用户定的，横向不需要补齐。
+ *
+ * @param {Array<{x:number,y:number,w:number,h:number,_k?:string}>} cards 原地修改
+ * @param {string} [keepKey] 跳过这张卡（拖动中让它跟着指针走，松手再补）
+ */
+export function compact(cards, keepKey) {
+  const ordered = [...(cards || [])].sort((a, b) => (a.y - b.y) || (a.x - b.x))
+  const placed = []
+  for (const card of ordered) {
+    Object.assign(card, clampRect(card))
+    if (keepKey && card._k === keepKey) {
+      placed.push(card)
+      continue
+    }
+    // 逐行试：一次跳太多会「穿过」中间那张卡，落到不该去的位置
+    let guard = 0
+    while (card.y > 0 && guard++ < 600) {
+      const oneRowUp = { x: card.x, y: card.y - 1, w: card.w, h: card.h }
+      if (placed.some(item => overlaps(item, oneRowUp))) break
+      card.y -= 1
+    }
+    placed.push(card)
+  }
+  return cards
+}
+
+/** 兜底：保存前把所有卡片按 y 顺序过一遍，重叠的往下推，保证存的是干净布局。 */
+export function settle(cards, cols = COLS) {
+  const placed = []
+  const ordered = [...(cards || [])].sort((a, b) => (a.y - b.y) || (a.x - b.x))
+  for (const card of ordered) {
+    Object.assign(card, clampRect(card))
+    let guard = 0
+    let hit = placed.find(item => overlaps(item, card))
+    while (hit && guard++ < 200) {
+      card.y = hit.y + hit.h
+      hit = placed.find(item => overlaps(item, card))
+    }
+    placed.push(card)
+  }
+  return cards
+}
+
 function clamp(value, min, max) {
   const number = Number.isFinite(Number(value)) ? Number(value) : min
   return Math.min(Math.max(number, min), max)

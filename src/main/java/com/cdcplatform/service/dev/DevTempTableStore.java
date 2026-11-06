@@ -176,6 +176,29 @@ public class DevTempTableStore {
         return written;
     }
 
+    /**
+     * 改某个字段的显示名。
+     *
+     * <p>只动列目录里的 {@code LABEL}，物理列仍是 {@code C1..Cn}，所以不会重建表、
+     * 也不会碰已经写进去的数据。
+     */
+    public void renameColumn(String table, int index, String label) {
+        try (Connection connection = dataSource.getConnection()) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(ensureColumnCatalog());
+            }
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "UPDATE " + catalog() + " SET LABEL = ? WHERE TABLE_NAME = ? AND IDX = ?")) {
+                statement.setString(1, label);
+                statement.setString(2, table);
+                statement.setInt(3, index);
+                statement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("更新字段名称失败：" + e.getMessage(), e);
+        }
+    }
+
     public List<ColumnMeta> columnsOf(String table) {
         List<ColumnMeta> columns = new ArrayList<>();
         try (Connection connection = dataSource.getConnection();
@@ -281,6 +304,16 @@ public class DevTempTableStore {
      * <p>与 {@link #insert} 的区别是不依赖 ResultSet，调用方可以边解析边喂行。
      */
     public long insertRows(String table, List<ColumnMeta> columns, Iterable<List<Object>> rows, int maxRows) {
+        return insertRows(table, columns, rows, maxRows, 0);
+    }
+
+    /**
+     * 追加写入，{@code ordStart} 是已有行数：追加时 ORD 要接着往下排，否则会撞主键。
+     *
+     * <p>{@code maxRows} 是整表上限，不单单是本次写入的行数。
+     */
+    public long insertRows(String table, List<ColumnMeta> columns, Iterable<List<Object>> rows, int maxRows,
+                           long ordStart) {
         if (columns.isEmpty()) {
             throw new IllegalStateException("数据集没有列，无法写入");
         }
@@ -291,11 +324,11 @@ public class DevTempTableStore {
             connection.setAutoCommit(false);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 for (List<Object> row : rows) {
-                    if (written >= maxRows) {
+                    if (ordStart + written >= maxRows) {
                         throw new IllegalStateException("数据集超过 " + maxRows + " 行上限");
                     }
                     written++;
-                    statement.setLong(1, written);
+                    statement.setLong(1, ordStart + written);
                     for (int i = 0; i < columns.size(); i++) {
                         statement.setObject(i + 2, row.get(i));
                     }
@@ -312,6 +345,47 @@ public class DevTempTableStore {
             throw new IllegalStateException("写入数据集失败：" + e.getMessage(), e);
         }
         return written;
+    }
+
+    /** 按 {@code ORD} 分页读取，用于数据集详情页的数据明细。 */
+    public PreviewRows page(String table, int offset, int limit) {
+        List<ColumnMeta> columns = columnsOf(table);
+        List<String> labels = columns.stream().map(ColumnMeta::label).toList();
+        List<List<Object>> rows = new ArrayList<>();
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        String sql = "SELECT * FROM " + table + " ORDER BY \"ORD\" LIMIT " + safeLimit + " OFFSET " + safeOffset;
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(sql)) {
+            while (rs.next()) {
+                List<Object> row = new ArrayList<>(columns.size());
+                for (ColumnMeta column : columns) {
+                    row.add(rs.getObject(column.physical()));
+                }
+                rows.add(row);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法读取数据集数据：" + e.getMessage(), e);
+        }
+        return new PreviewRows(labels, rows, false);
+    }
+
+    /** 某一列已有的值，追加数据时用来跳过重复行。 */
+    public java.util.Set<String> valuesOf(String table, ColumnMeta column) {
+        java.util.Set<String> values = new java.util.HashSet<>();
+        String sql = "SELECT DISTINCT " + quote(column.physical()) + " FROM " + table
+                + " WHERE " + quote(column.physical()) + " IS NOT NULL";
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery(sql)) {
+            while (rs.next()) {
+                values.add(String.valueOf(rs.getObject(1)));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("无法读取去重主键：" + e.getMessage(), e);
+        }
+        return values;
     }
 
     public record SqlResult(String table, long rows, List<ColumnMeta> columns) {

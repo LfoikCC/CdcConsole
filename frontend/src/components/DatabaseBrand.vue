@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 const props=defineProps({type:String,label:String,showName:Boolean})
-const brands={MYSQL:['MySQL','mysql-small.png'],SQLSERVER:['SQL Server','sqlserver-icon.png'],STARROCKS:['StarRocks','starrocks-icon.svg'],STARROCKS_STREAM_LOAD:['StarRocks','starrocks-icon.svg'],KAFKA:['Kafka','kafka-icon.svg']}
+const brands={MYSQL:['MySQL','mysql-small.png'],SQLSERVER:['SQL Server','sqlserver-icon.png'],STARROCKS:['StarRocks','starrocks-icon.svg'],STARROCKS_STREAM_LOAD:['StarRocks','starrocks-icon.svg'],KAFKA:['Kafka','kafka-icon.svg'],EXCEL:['Excel','excel-icon.svg'],CSV:['CSV','excel-icon.svg']}
 const brand=computed(()=>brands[props.type])
 const name=computed(()=>props.label||brand.value?.[0]||props.type||'未知类型')
 const description=computed(()=>props.label&&brand.value&&props.label!==brand.value[0]?`${brand.value[0]} · ${props.label}`:name.value)

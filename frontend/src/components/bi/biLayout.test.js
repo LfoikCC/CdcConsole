@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  COLS, GAP, ROW_H, applyMasonry, clampRect, colWidth, freeSlot, gridToPx, overlaps, packMasonry, pxToGrid, totalRows
+  COLS, GAP, ROW_H, applyMasonry, clampRect, colWidth, compact, freeSlot, gridToPx, overlaps, packMasonry,
+  placeCard, pxToGrid, settle, totalRows, withRects
 } from './biLayout'
 
 describe('biLayout', () => {
@@ -80,5 +81,85 @@ describe('biLayout', () => {
   it('reports the rows the canvas must cover', () => {
     expect(totalRows([{ x: 0, y: 0, w: 6, h: 8 }, { x: 6, y: 4, w: 6, h: 10 }])).toBe(14)
     expect(totalRows([])).toBe(0)
+  })
+
+  it('lets a card sit anywhere in the row, not only the left edge', () => {
+    const cards = [
+      { x: 0, y: 0, w: 6, h: 8 },
+      { x: 0, y: 8, w: 6, h: 8 }
+    ]
+    placeCard(cards, 1, { x: 6, y: 0, w: 6, h: 8 })
+    expect(cards[1]).toMatchObject({ x: 6, y: 0 })
+    expect(cards[0]).toMatchObject({ x: 0, y: 0 })
+  })
+
+  it('pushes the overlapped card down instead of stacking on top of it', () => {
+    const cards = [
+      { x: 0, y: 0, w: 6, h: 8 },
+      { x: 6, y: 0, w: 6, h: 8 }
+    ]
+    placeCard(cards, 1, { x: 0, y: 0, w: 6, h: 8 })
+    expect(cards[1]).toMatchObject({ x: 0, y: 0 })
+    expect(cards[0]).toMatchObject({ x: 0, y: 8 })
+    expect(overlaps(cards[0], cards[1])).toBe(false)
+  })
+
+  it('keeps cards inside the 12 columns when dragged past the right edge', () => {
+    const cards = [{ x: 0, y: 0, w: 6, h: 8 }]
+    placeCard(cards, 0, { x: 9, y: 0, w: 6, h: 8 })
+    expect(cards[0]).toMatchObject({ x: 6, y: 0 })
+  })
+
+  it('floats a card up into the empty space above it', () => {
+    const cards = [{ x: 6, y: 12, w: 6, h: 8 }]
+    compact(cards)
+    // 只动 y；x 和宽度是用户摆的，横向不补齐
+    expect(cards[0]).toMatchObject({ x: 6, y: 0, w: 6, h: 8 })
+  })
+
+  it('stops right below the card above it in the same columns', () => {
+    const cards = [
+      { _k: 'a', x: 0, y: 0, w: 6, h: 4 },
+      { _k: 'b', x: 0, y: 12, w: 6, h: 4 }
+    ]
+    compact(cards)
+    expect(cards[1]).toMatchObject({ x: 0, y: 4 })
+    expect(overlaps(cards[0], cards[1])).toBe(false)
+  })
+
+  it('compacts each column independently', () => {
+    const cards = [
+      { x: 0, y: 0, w: 6, h: 10 },
+      { x: 6, y: 10, w: 6, h: 4 }
+    ]
+    compact(cards)
+    // 右列上方是空的，补到 0；左列本来就在顶部
+    expect(cards[1]).toMatchObject({ x: 6, y: 0 })
+    expect(cards[0]).toMatchObject({ x: 0, y: 0 })
+  })
+
+  it('can leave the card being dragged where it is', () => {
+    const cards = [
+      { _k: 'drag', x: 0, y: 6, w: 6, h: 4 },
+      { _k: 'other', x: 6, y: 20, w: 6, h: 4 }
+    ]
+    compact(cards, 'drag')
+    // 被拖的那张跟着指针，先不动；别的卡照常往上补
+    expect(cards[0]).toMatchObject({ y: 6 })
+    expect(cards[1]).toMatchObject({ y: 0 })
+  })
+
+  it('settles overlaps before saving and fills in missing coordinates', () => {
+    const cards = [
+      { x: 0, y: 0, w: 6, h: 8 },
+      { x: 0, y: 0, w: 6, h: 8 }
+    ]
+    settle(cards)
+    expect(overlaps(cards[0], cards[1])).toBe(false)
+
+    const legacy = [{ w: 6, h: 8 }, { w: 6, h: 8 }]
+    withRects(legacy)
+    expect(legacy[0]).toMatchObject({ x: 0, y: 0 })
+    expect(legacy[1]).toMatchObject({ x: 6, y: 0 })
   })
 })

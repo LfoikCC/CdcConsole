@@ -28,7 +28,9 @@ public class DatasetService {
                          Map<String, Object> sheet) {
     }
 
-    public record Preview(List<String> columns, List<List<Object>> rows, boolean truncated, long elapsedMs) {
+    /** 数据集明细：{@code paged=false} 表示直连数据集，只能看前若干行。 */
+    public record DataRows(List<Map<String, Object>> columns, List<List<Object>> rows, long total,
+                           boolean hasMore, boolean paged) {
     }
 
     private final DatasetRepository datasets;
@@ -153,6 +155,122 @@ public class DatasetService {
         datasets.saveColumns(id, columns);
     }
 
+    /**
+     * 改字段展示名。
+     *
+     * <p>只写平台里的别名，数据源的物理字段名（{@code original_name}）不动，
+     * 所以刷新字段、追加数据都还按原名匹配。
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public void renameColumn(long id, int ordinal, String name) {
+        String trimmed = name == null ? "" : name.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("字段名称不能为空");
+        }
+        if (trimmed.length() > 160) {
+            throw new IllegalArgumentException("字段名称不能超过 160 个字符");
+        }
+        List<DatasetColumn> columns = datasets.columns(id);
+        DatasetColumn target = columns.stream()
+                .filter(column -> column.ordinal() == ordinal)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("字段不存在或已被刷新：" + ordinal));
+        if (trimmed.equals(target.name())) {
+            return;
+        }
+        boolean duplicated = columns.stream().anyMatch(column -> column.ordinal() != ordinal
+                && column.name() != null && column.name().equalsIgnoreCase(trimmed));
+        if (duplicated) {
+            throw new IllegalArgumentException("字段名称「" + trimmed + "」已存在");
+        }
+        datasets.updateColumnName(id, ordinal, trimmed);
+        Dataset dataset = datasets.dataset(id);
+        applyColumnName(dataset, target, trimmed);
+    }
+
+    /**
+     * 用数据源里的字段注释当展示名。
+     *
+     * <p>注释重复（多个字段都写「备用字段」）或与现有名字撞车时跳过，避免出现两个同名字段。
+     *
+     * @return 实际改名的字段数
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public int syncColumnComments(long id) {
+        Dataset dataset = datasets.dataset(id);
+        if (!"TABLE".equals(dataset.datasetType())) {
+            throw new IllegalArgumentException("只有直连库表的数据集能读取字段注释");
+        }
+        Map<String, String> comments = reader.columnComments(source(dataset.accountId()),
+                dataset.databaseName(), dataset.tableName());
+        if (comments.isEmpty()) {
+            return 0;
+        }
+        List<DatasetColumn> columns = datasets.columns(id);
+        Map<Integer, String> planned = commentNames(columns, comments);
+        for (DatasetColumn column : columns) {
+            String name = planned.get(column.ordinal());
+            if (name != null) {
+                applyColumnName(dataset, column, name);
+            }
+        }
+        return planned.size();
+    }
+
+    /** 全部还原成数据源里的原始字段名。 */
+    @org.springframework.transaction.annotation.Transactional
+    public int resetColumnNames(long id) {
+        Dataset dataset = datasets.dataset(id);
+        int changed = 0;
+        for (DatasetColumn column : datasets.columns(id)) {
+            String original = column.originalName();
+            if (original == null || original.isBlank() || original.equals(column.name())) {
+                continue;
+            }
+            applyColumnName(dataset, column, original);
+            changed++;
+        }
+        return changed;
+    }
+
+    /** 注释 → 新字段名的计划：ordinal 到目标名字。只挑能安全改的。 */
+    static Map<Integer, String> commentNames(List<DatasetColumn> columns, Map<String, String> comments) {
+        Map<String, Integer> counts = new java.util.HashMap<>();
+        for (String value : comments.values()) {
+            String key = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!key.isEmpty()) {
+                counts.merge(key, 1, Integer::sum);
+            }
+        }
+        Map<Integer, String> planned = new java.util.LinkedHashMap<>();
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (DatasetColumn column : columns) {
+            String raw = comments.get(column.originalName());
+            String candidate = raw == null ? "" : raw.trim();
+            boolean usable = !candidate.isEmpty()
+                    && counts.getOrDefault(candidate.toLowerCase(java.util.Locale.ROOT), 0) == 1
+                    && !candidate.equals(column.name());
+            if (usable) {
+                planned.put(column.ordinal(), candidate);
+            } else {
+                used.add(String.valueOf(column.name()).toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        // 注释和没改名的字段重名时也不能用
+        planned.entrySet().removeIf(entry -> !used.add(entry.getValue().toLowerCase(java.util.Locale.ROOT)));
+        return planned;
+    }
+
+    /** 改一个字段的展示名：库里的元数据、物化表列目录、卡片/筛选器引用一起同步。 */
+    private void applyColumnName(Dataset dataset, DatasetColumn column, String name) {
+        datasets.updateColumnName(dataset.id(), column.ordinal(), name);
+        if (dataset.storageTable() != null) {
+            // 物化表的物理列是 C1..Cn，显示名存在列目录里，跟着一起改
+            datasetStore.renameColumn(dataset.storageTable(), column.ordinal(), name);
+        }
+        biDashboards.renameField(dataset.id(), column.name(), name);
+    }
+
     public long createExtract(String name, String description, String user) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("请填写数据集名称");
@@ -180,27 +298,60 @@ public class DatasetService {
         datasets.saveColumns(id, columns);
     }
 
-    public Preview preview(long id, int limit) {
-        long started = System.currentTimeMillis();
+    /** 详情页的数据明细：离线数据集按 ORD 分页，直连数据集也在数据源侧分页。 */
+    public DataRows rows(long id, int offset, int limit) {
         Dataset dataset = datasets.dataset(id);
-        int safe = Math.max(1, Math.min(limit, 500));
-        if ("EXCEL".equals(dataset.datasetType()) || "EXTRACT".equals(dataset.datasetType())) {
+        int safeOffset = Math.max(0, offset);
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        List<DatasetColumn> columns = datasets.columns(id);
+        boolean offline = "EXCEL".equals(dataset.datasetType()) || "EXTRACT".equals(dataset.datasetType());
+        if (offline) {
             if (dataset.storageTable() == null) {
                 throw new IllegalArgumentException("数据集还没有物化数据");
             }
             try {
-                var rows = datasetStore.preview(dataset.storageTable(), safe);
-                return new Preview(rows.columns(), rows.rows(), rows.truncated(),
-                        System.currentTimeMillis() - started);
-            } catch (Exception e) {
-                throw new IllegalArgumentException("离线数据集还没有数据，请先运行写入它的数据流");
+                var page = datasetStore.page(dataset.storageTable(), safeOffset, safeLimit);
+                long total = datasetStore.rowCount(dataset.storageTable());
+                return new DataRows(columnMeta(columns, page.columns()), page.rows(), total,
+                        safeOffset + page.rows().size() < total, true);
+            } catch (RuntimeException e) {
+                // 物化表还不存在时 H2 报的是「表/结构不存在」，对用户没有意义
+                throw new IllegalArgumentException("离线数据集还没有数据，请先运行写入它的数据流", e);
             }
         }
         var source = source(dataset.accountId());
-        var data = "SQL".equals(dataset.datasetType())
-                ? reader.previewSql(source, dataset.databaseName(), dataset.sqlText(), safe)
-                : reader.previewTable(source, dataset.databaseName(), dataset.tableName(), safe);
-        return new Preview(data.columns(), data.rows(), data.truncated(), System.currentTimeMillis() - started);
+        boolean sqlType = "SQL".equals(dataset.datasetType());
+        var page = sqlType
+                ? reader.pageSql(source, dataset.databaseName(), dataset.sqlText(), safeOffset, safeLimit)
+                : reader.pageTable(source, dataset.databaseName(), dataset.tableName(), safeOffset, safeLimit);
+        long total = sqlType
+                ? reader.countSql(source, dataset.databaseName(), dataset.sqlText())
+                : reader.countTable(source, dataset.databaseName(), dataset.tableName());
+        return new DataRows(columnMeta(columns, page.columns()), page.rows(), total,
+                safeOffset + page.rows().size() < total, true);
+    }
+
+    /** 字段名 + 原始字段名 + 类型；元数据缺失或与数据源对不上时退回数据源里的列名。 */
+    private static List<Map<String, Object>> columnMeta(List<DatasetColumn> columns, List<String> fallback) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        if (columns.isEmpty() || (!fallback.isEmpty() && columns.size() != fallback.size())) {
+            for (String name : fallback) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("name", name);
+                row.put("originalName", name);
+                row.put("dataType", "");
+                rows.add(row);
+            }
+            return rows;
+        }
+        for (DatasetColumn column : columns) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("name", column.name());
+            row.put("originalName", column.originalName());
+            row.put("dataType", column.dataType());
+            rows.add(row);
+        }
+        return rows;
     }
 
     public void delete(long id) {
@@ -250,6 +401,7 @@ public class DatasetService {
         row.put("rowCount", dataset.rowCount());
         row.put("columnCount", dataset.columnCount());
         row.put("status", dataset.status());
+        row.put("createdAt", dataset.createdAt());
         row.put("updatedAt", dataset.updatedAt());
         return row;
     }
